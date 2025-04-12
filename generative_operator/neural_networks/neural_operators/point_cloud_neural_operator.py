@@ -478,7 +478,6 @@ class SpectralConv(nn.Module):
         
         return x
     
-
 def compute_gradient(f, directed_edges, edge_gradient_weights):
     '''
     Compute gradient of field f at each node
@@ -529,9 +528,6 @@ def compute_gradient(f, directed_edges, edge_gradient_weights):
     
     return f_gradients.permute(0,2,1)
     
-
-
-
 class PCNO(nn.Module):
     def __init__(
         self,

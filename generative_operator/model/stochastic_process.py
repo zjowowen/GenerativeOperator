@@ -3,7 +3,7 @@ from typing import Union
 import torch
 
 
-from airfoil_generation.model.probability_path import ConditionalProbabilityPath
+from generative_operator.model.probability_path import ConditionalProbabilityPath
 
 
 class StochasticProcess:

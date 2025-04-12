@@ -5,7 +5,7 @@ import torch.nn as nn
 from easydict import EasyDict
 from tensordict import TensorDict
 
-from airfoil_generation.neural_networks import get_module
+from generative_operator.neural_networks import get_module
 
 
 class IntrinsicModel(nn.Module):
