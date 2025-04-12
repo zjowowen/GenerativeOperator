@@ -9,92 +9,43 @@ from generative_operator.utils.normalizer import UnitGaussianNormalizer
 
 from tqdm import tqdm
 
-def compute_triangle_area_(points):
-    ab = points[1, :] - points[0,:]
-    ac = points[2, :] - points[0,:]
-    cross_product = np.cross(ab, ac)
-    return 0.5 * np.linalg.norm(cross_product)
+from generative_operator.neural_networks.neural_operators.point_cloud_data_process import compute_triangle_area_, compute_tetrahedron_volume_, compute_measure_per_elem_, compute_node_measures, convert_structured_data
 
+def pinv(a, rrank, rcond=1e-3):
+    """
+    Compute the (Moore-Penrose) pseudo-inverse of a matrix.
 
-def compute_tetrahedron_volume_(points):
-    ab = points[1, :] - points[0,:]
-    ac = points[2, :] - points[0,:]
-    ad = points[3, :] - points[0,:]
-    # Calculate the scalar triple product
-    volume = abs(np.dot(np.cross(ab, ac), ad)) / 6
-    return volume
+    Calculate the generalized inverse of a matrix using its
+    singular-value decomposition (SVD) and including all
+    *large* singular values.
 
-def compute_measure_per_elem_(points, elem_dim):
-    '''
-    Compute element measure (length, area or volume)
-    for 2-point  element, compute its length
-    for 3-point  element, compute its area
-    for 4-point  element, compute its area if elem_dim=2; compute its volume if elem_dim=3
-    equally assign it to its nodes
-    
-        Parameters: 
-            points : float[npoints, ndims]
-            elem_dim : int
-    
+        Parameters:
+            a : float[M, N]
+                Matrix to be pseudo-inverted.
+            rrank : int
+                Maximum rank
+            rcond : float, optional
+                Cutoff for small singular values.
+                Singular values less than or equal to
+                ``rcond * largest_singular_value`` are set to zero.
+                Default: ``1e-3``.
+
         Returns:
-            s : float
-    '''
-    
-    npoints, ndims = points.shape
-    if npoints == 2: 
-        s = np.linalg.norm(points[0, :] - points[1, :])
-    elif npoints == 3:
-        s = compute_triangle_area_(points)
-    elif npoints == 4:
-        assert(npoints == 3 or npoints == 4)
-        if elem_dim == 2:
-            s = compute_triangle_area_(points[:3,:]) + compute_triangle_area_(points[1:,:])
-        elif elem_dim == 3:
-            s = compute_tetrahedron_volume_(points)
-        else:
-            raise ValueError("elem dim ", elem_dim,  "is not recognized")
-    else:   
-        raise ValueError("npoints ", npoints,  "is not recognized")
-    return s
+            B : float[N, M]
+                The pseudo-inverse of `a`. 
 
-def compute_node_measures(nodes, elems):
-    '''
-    Compute node measures  (separate length, area and volume ... for each node), 
-    For each element, compute its length, area or volume s, 
-    equally assign it to its ne nodes (measures[:] += s/ne).
+    """
+    u, s, vt = np.linalg.svd(a, full_matrices=False)
 
-        Parameters:  
-            nodes : float[nnodes, ndims]
-            elems : int[nelems, max_num_of_nodes_per_elem+1]. 
-                    The first entry is elem_dim, the dimensionality of the element.
-                    The elems array can have some padding numbers, for example, when
-                    we have both line segments and triangles, the padding values are
-                    -1 or any negative integers.
-            
-        Return :
-            measures : float[nnodes, nmeasures]
-                       padding NaN for nodes that do not have measures
-                       nmeasures >= 1: number of measures with different dimensionalities
-                       For example, if there are both lines and triangles, nmeasures = 2
-            
-    '''
-    nnodes, ndims = nodes.shape
-    measures = np.full((nnodes, ndims), np.nan)
-    measure_types = [False] * ndims
-    for elem in elems:
-        elem_dim, e = elem[0], elem[1:]
-        e = e[e >= 0]
-        ne = len(e)
-        # compute measure based on elem_dim
-        s = compute_measure_per_elem_(nodes[e, :], elem_dim)
-        # assign it to cooresponding measures
-        measures[e, elem_dim-1] = np.nan_to_num(measures[e, elem_dim-1], nan=0.0)
-        measures[e, elem_dim-1] += s/ne 
-        measure_types[elem_dim - 1] = True
+    # discard small singular values
+    cutoff = rcond * s[0]
+    large = s > cutoff
+    large[rrank:] = False
+    s = np.divide(1, s, where=large, out=s)
+    s[~large] = 0
 
-    # return only nonzero measures
-    return measures[:, measure_types]
-
+    res = np.matmul(np.transpose(vt), np.multiply(s[..., np.newaxis], np.transpose(u)))
+    return res
 
 def compute_edge_gradient_weights_helper(nodes, node_dims, adj_list, rcond = 1e-3):
     '''
@@ -155,7 +106,6 @@ def compute_edge_gradient_weights_helper(nodes, node_dims, adj_list, rcond = 1e-
     directed_edges = np.array(directed_edges, dtype=int)
     edge_gradient_weights = np.concatenate(edge_gradient_weights, axis=0)
     return directed_edges, edge_gradient_weights, adj_list
-
 
 def compute_edge_gradient_weights(nodes, elems, rcond = 1e-3):
     '''
@@ -219,8 +169,6 @@ def compute_edge_gradient_weights(nodes, elems, rcond = 1e-3):
             adj_list[e[i]].update([e[j] for j in range(nnodes_per_elem) if j != i])
     
     return compute_edge_gradient_weights_helper(nodes, node_dims, adj_list, rcond = rcond)
-
-
 
 def preprocess_data(nodes_list, elems_list, features_list):
     '''
@@ -295,66 +243,6 @@ def preprocess_data(nodes_list, elems_list, features_list):
 
     return nnodes, node_mask, nodes, node_measures, features, directed_edges, edge_gradient_weights 
 
-def convert_structured_data(coords_list, features, nnodes_per_elem = 3, feature_include_coords = True):
-    '''
-    Convert structured data, to unstructured data
-                    ny-1                                                                  ny-1   2ny-1
-                    ny-2                                                                  ny-2    .
-                    .                                                                       .     .
-    y direction     .          nodes are ordered from left to right/bottom to top           .     .
-                    .                                                                       .     .
-                    1                                                                       1     ny+1
-                    0                                                                       0     ny
-                        0 - 1 - 2 - ... - nx-1   (x direction)
-
-        Parameters:  
-            coords_list            :  list of ndims float[nnodes, nx, ny], for each dimension
-            features               :  float[nelems, nx, ny, nfeatures]
-            nnodes_per_elem        :  int, nnodes_per_elem = 3: triangle mesh; nnodes_per_elem = 4: quad mesh
-            feature_include_coords :  boolean, whether treating coordinates as features, if coordinates
-                                      are treated as features, they are concatenated at the end
-
-        Return :  
-            nodes_list :     list of float[nnodes, ndims]
-            elems : int[nelems, max_num_of_nodes_per_elem+1]. 
-                    The first entry is elem_dim, the dimensionality of the element.
-                    The elems array can have some padding numbers, for example, when
-                    we have both line segments and triangles, the padding values are
-                    -1 or any negative integers.
-            features_list  : list of float[nnodes, nfeatures]
-    '''
-    print("convert_structured_data so far only supports 2d problems")
-    ndims = len(coords_list)
-    assert(ndims == 2) 
-    coordx, coordy = coords_list
-    ndata, nx, ny  = coords_list[0].shape
-    nnodes, nelems = nx*ny, (nx-1)*(ny-1)*(5 - nnodes_per_elem)
-    nodes = np.stack((coordx.reshape((ndata, nnodes)), coordy.reshape((ndata, nnodes))), axis=2)
-    if feature_include_coords :
-        nfeatures = features.shape[-1] + ndims
-        features = np.concatenate((features.reshape((ndata, nnodes, -1)), nodes), axis=-1)
-    else :
-        nfeatures = features.shape[-1]
-        features = features.reshape((ndata, nnodes, -1))
-
-    elems = np.zeros((nelems, nnodes_per_elem + 1), dtype=int)
-    for i in range(nx-1):
-        for j in range(ny-1):
-            ie = i*(ny-1) + j 
-            if nnodes_per_elem == 4:
-                elems[ie, :] = 2, i*ny+j, i*ny+j+1, (i+1)*ny+j+1, (i+1)*ny+j
-            else:
-                elems[2*ie, :]   = 2, i*ny+j, i*ny+j+1, (i+1)*ny+j+1
-                elems[2*ie+1, :] = 2, i*ny+j, (i+1)*ny+j+1, (i+1)*ny+j
-
-    elems = np.tile(elems, (ndata, 1, 1))
-
-    nodes_list = [nodes[i,...] for i in range(ndata)]
-    elems_list = [elems[i,...] for i in range(ndata)]
-    features_list = [features[i,...] for i in range(ndata)]
-
-    return nodes_list, elems_list, features_list  
-
 def compute_node_weights(nnodes,  node_measures,  equal_measure = False):
     '''
     Compute node weights based on node measures (length, area, volume,......).
@@ -408,8 +296,6 @@ def compute_node_weights(nnodes,  node_measures,  equal_measure = False):
     
     return node_measures_new, node_weights
 
-
-
 def _get_act(act):
     if act == "tanh":
         func = F.tanh
@@ -426,7 +312,6 @@ def _get_act(act):
     else:
         raise ValueError(f"{act} is not supported")
     return func
-
 
 def compute_Fourier_modes_helper(ndims, nks, Ls):
     '''
@@ -491,7 +376,6 @@ def compute_Fourier_modes_helper(ndims, nks, Ls):
     k_pairs = k_pairs[np.argsort(k_pair_mag), :]
     return k_pairs
 
-
 def compute_Fourier_modes(ndims, nks, Ls):
     '''
     Compute `nmeasures` sets of Fourier modes number k
@@ -511,7 +395,6 @@ def compute_Fourier_modes(ndims, nks, Ls):
     k_pairs = np.stack([compute_Fourier_modes_helper(ndims, nks[i*ndims:(i+1)*ndims], Ls[i*ndims:(i+1)*ndims]) for i in range(nmeasures)], axis=-1)
     
     return k_pairs
-
 
 def compute_Fourier_bases(nodes, modes):
     '''
