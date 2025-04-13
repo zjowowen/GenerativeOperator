@@ -35,7 +35,7 @@ from generative_operator.model.flow_model import (
     FunctionalFlow,
 )
 from generative_operator.model.point_cloud_flow_model import PointCloudFunctionalFlow
-
+from generative_operator.utils.optimizer import CosineAnnealingWarmupLR
 from generative_operator.dataset.tensordict_dataset import TensorDictDataset
 
 from generative_operator.neural_networks.neural_operators.point_cloud_neural_operator import preprocess_data, compute_node_weights, compute_Fourier_modes
@@ -156,7 +156,30 @@ def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, nod
         batch_size=(n_test,),
     )
 
-    return train_data, test_data
+    n_train, n_test = train_data["condition"]["x"].shape[0], test_data["condition"]["x"].shape[0]
+
+    if config.parameter.normalization_x:
+        x_normalizer = UnitGaussianNormalizer(train_data["x"], non_normalized_dim = config.parameter.non_normalized_dim_x, normalization_dim=config.parameter.normalization_dim_x)
+        x_train = x_normalizer.encode(train_data["condition"]["x"])
+        x_test = x_normalizer.encode(test_data["condition"]["x"])
+        x_normalizer.to(device)
+    else:
+        x_normalizer = None
+        
+    if config.parameter.normalization_y:
+        y_normalizer = UnitGaussianNormalizer(train_data["y"], non_normalized_dim = config.parameter.non_normalized_dim_y, normalization_dim=config.parameter.normalization_dim_y)
+        y_train = y_normalizer.encode(train_data["y"])
+        y_test = y_normalizer.encode(test_data["y"])
+        y_normalizer.to(device)
+    else:
+        y_normalizer = None
+
+    train_dataset = TensorDictDataset(keys=["y", "condition"], max_size=n_train)
+    test_dataset = TensorDictDataset(keys=["y", "condition"], max_size=n_test)
+    train_dataset.append(train_data, batch_size=n_train)
+    test_dataset.append(test_data, batch_size=n_test)
+
+    return train_dataset, test_dataset, x_normalizer, y_normalizer
 
 
 
@@ -231,47 +254,26 @@ if __name__ == "__main__":
 
     project_name = "PCNO_airfoil"
 
-    epochs = 500
-    base_lr = 0.001
-    lr_ratio = 10
-    scheduler = "OneCycleLR"
-    weight_decay = 1.0e-4
-    batch_size=5
-
-    normalization_x = False #True
-    normalization_y = True
-    normalization_dim_x = []
-    normalization_dim_y = []
-    non_normalized_dim_x = 3
-    non_normalized_dim_y = 0
-
     config = EasyDict(
         dict(
             device=device,
             parameter=dict(
-                train_samples=20000,
+                batch_size=4,
+                warmup_steps=1000 // 4 * 2000 // 100,
                 learning_rate=5e-5 * accelerator.num_processes,
-                iterations=20000 // 1024 * 2000,
+                iterations=1000 // 4 * 2000,
                 log_rate=100,
-                eval_rate=20000 // 1024 * 500,
-                checkpoint_rate=20000 // 1024 * 500,
+                eval_rate=1000 // 4 * 500,
+                checkpoint_rate=1000 // 4 * 500,
                 video_save_path=f"output/{project_name}/videos",
                 model_save_path=f"output/{project_name}/models",
                 model_load_path=None,
-            ),
-            train=dict(
-                base_lr=base_lr,
-                lr_ratio=lr_ratio,
-                weight_decay=weight_decay,
-                epochs=epochs,
-                scheduler=scheduler,
-                batch_size=batch_size,
-                normalization_x=normalization_x,
-                normalization_y=normalization_y,
-                normalization_dim_x=normalization_dim_x,
-                normalization_dim_y=normalization_dim_y,
-                non_normalized_dim_x=non_normalized_dim_x,
-                non_normalized_dim_y=non_normalized_dim_y
+                normalization_x=False,
+                normalization_y=True,
+                normalization_dim_x=[],
+                normalization_dim_y=[],
+                non_normalized_dim_x=3,
+                non_normalized_dim_y=0,
             ),
         )
     )
@@ -279,11 +281,11 @@ if __name__ == "__main__":
     data_path = "/mnt/d/Dataset/"
     # data_preprocess(data_path)
     nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights = load_data(data_path)
-    # x_train, x_test, aux_train, aux_test, y_train, y_test = data_preparition(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights)
 
-    train_data, test_data = data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights)
+    train_dataset, test_dataset, x_normalizer, y_normalizer = data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights)
 
-    flow_model, flow_model_config = model_initialization(device, train_data["condition"]["x"], train_data["y"])
+
+    flow_model, flow_model_config = model_initialization(device, train_dataset["condition"]["x"], train_dataset["y"])
 
     if config.parameter.model_load_path is not None and os.path.exists(
         config.parameter.model_load_path
@@ -297,47 +299,27 @@ if __name__ == "__main__":
         flow_model.model.parameters(), lr=config.parameter.learning_rate
     )
 
+    scheduler = CosineAnnealingWarmupLR(
+        optimizer,
+        T_max=config.parameter.iterations,
+        eta_min=2e-6,
+        warmup_steps=config.parameter.warmup_steps,
+    )
+
     flow_model.model, optimizer = accelerator.prepare(flow_model.model, optimizer)
 
     os.makedirs(config.parameter.model_save_path, exist_ok=True)
 
-    n_train, n_test = train_data["condition"]["x"].shape[0], test_data["condition"]["x"].shape[0]
-    train_rel_l2_losses = []
-    test_rel_l2_losses = []
-    test_l2_losses = []
-    normalization_x, normalization_y = config["train"]["normalization_x"], config["train"]["normalization_y"]
-    normalization_dim_x, normalization_dim_y = config["train"]["normalization_dim_x"], config["train"]["normalization_dim_y"]
-    non_normalized_dim_x, non_normalized_dim_y = config["train"]["non_normalized_dim_x"], config["train"]["non_normalized_dim_y"]
-    
-
-    if normalization_x:
-        x_normalizer = UnitGaussianNormalizer(train_data["x"], non_normalized_dim = non_normalized_dim_x, normalization_dim=normalization_dim_x)
-        x_train = x_normalizer.encode(train_data["condition"]["x"])
-        x_test = x_normalizer.encode(test_data["condition"]["x"])
-        x_normalizer.to(device)
-        
-    if normalization_y:
-        y_normalizer = UnitGaussianNormalizer(train_data["y"], non_normalized_dim = non_normalized_dim_y, normalization_dim=normalization_dim_y)
-        y_train = y_normalizer.encode(train_data["y"])
-        y_test = y_normalizer.encode(test_data["y"])
-        y_normalizer.to(device)
-
-
-    train_dataset = TensorDictDataset(keys=["y", "condition"], max_size=n_train)
-    test_dataset = TensorDictDataset(keys=["y", "condition"], max_size=n_test)
-    train_dataset.append(train_data, batch_size=n_train)
-    test_dataset.append(test_data, batch_size=n_test)
-
     train_replay_buffer = TensorDictReplayBuffer(
         storage=train_dataset.storage,
-        batch_size=config['train']['batch_size'],
+        batch_size=config.parameter.batch_size,
         sampler=RandomSampler(),
         prefetch=10,
     )
 
     test_replay_buffer = TensorDictReplayBuffer(
         storage=test_dataset.storage,
-        batch_size=config['train']['batch_size'],
+        batch_size=config.parameter.batch_size,
         sampler=RandomSampler(),
         prefetch=10,
     )
@@ -379,7 +361,13 @@ if __name__ == "__main__":
 
                 # gaussian_process = flow_model.gaussian_process(data["nodes"])
                 x0, gaussian_process_samples = sample_from_covariance(matern_kernel, data["y"].shape[-1])
-                loss = flow_model.functional_flow_matching_loss(x0=x0, x1=data["y"], condition=data["condition"], gaussian_process_samples=gaussian_process_samples)
+
+                if y_normalizer is not None:
+                    x1 = y_normalizer.encode(data["y"])
+                else:
+                    x1 = data["y"]
+
+                loss = flow_model.functional_flow_matching_loss(x0=x0, x1=x1, condition=data["condition"], gaussian_process_samples=gaussian_process_samples)
                 optimizer.zero_grad()
                 accelerator.backward(loss)
                 optimizer.step()
