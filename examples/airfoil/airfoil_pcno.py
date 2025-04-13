@@ -41,7 +41,7 @@ from generative_operator.dataset.tensordict_dataset import TensorDictDataset
 from generative_operator.neural_networks.neural_operators.point_cloud_neural_operator import preprocess_data, compute_node_weights, compute_Fourier_modes
 from generative_operator.neural_networks.neural_operators.point_cloud_data_process import compute_triangle_area_, compute_tetrahedron_volume_, compute_measure_per_elem_, compute_node_measures, convert_structured_data
 
-
+from generative_operator.gaussian_process.matern import matern_halfinteger_kernel_batchwise
 from generative_operator.utils.normalizer import UnitGaussianNormalizer
 
 
@@ -124,26 +124,34 @@ def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, nod
 
 
     train_data = TensorDict(
-        {
-            "x": torch.cat((nodes_input[:n_train, ...], node_rhos[:n_train, ...]), -1),
-            "y": features[:n_train,...],
-            "node_mask": node_mask[0:n_train,...],
-            "nodes": nodes[0:n_train,...],
-            "node_weights": node_weights[0:n_train,...],
-            "directed_edges": directed_edges[0:n_train,...],
-            "edge_gradient_weights": edge_gradient_weights[0:n_train,...]
+        {   "y": features[:n_train,...],
+            "condition": TensorDict(
+                {
+                    "x": torch.cat((nodes_input[:n_train, ...], node_rhos[:n_train, ...]), -1),
+                    "node_mask": node_mask[0:n_train,...],
+                    "nodes": nodes[0:n_train,...],
+                    "node_weights": node_weights[0:n_train,...],
+                    "directed_edges": directed_edges[0:n_train,...],
+                    "edge_gradient_weights": edge_gradient_weights[0:n_train,...]
+                },
+                batch_size=(n_train,),
+            ),
         },
         batch_size=(n_train,),
     )
     test_data = TensorDict(
-        {
-            "x": torch.cat((nodes_input[-n_test:, ...], node_rhos[-n_test:, ...]),-1),
-            "y": features[-n_test:,...],
-            "node_mask": node_mask[-n_test:,...],
-            "nodes": nodes[-n_test:,...],
-            "node_weights": node_weights[-n_test:,...],
-            "directed_edges": directed_edges[-n_test:,...],
-            "edge_gradient_weights": edge_gradient_weights[-n_test:,...]
+        {   "y": features[-n_test:,...],
+            "condition": TensorDict(
+                {
+                    "x": torch.cat((nodes_input[-n_test:, ...], node_rhos[-n_test:, ...]),-1),
+                    "node_mask": node_mask[-n_test:,...],
+                    "nodes": nodes[-n_test:,...],
+                    "node_weights": node_weights[-n_test:,...],
+                    "directed_edges": directed_edges[-n_test:,...],
+                    "edge_gradient_weights": edge_gradient_weights[-n_test:,...]
+                },
+                batch_size=(n_test,),
+            ),
         },
         batch_size=(n_test,),
     )
@@ -192,7 +200,7 @@ def model_initialization(device, x_train, y_train):
                             nmeasures=1,
                             layers=[128,128,128,128,128],
                             fc_dim=128,
-                            in_dim=x_train.shape[-1], 
+                            in_dim=y_train.shape[-1]+1, 
                             out_dim=y_train.shape[-1],
                             train_sp_L="together",
                             act='gelu'
@@ -207,7 +215,7 @@ def model_initialization(device, x_train, y_train):
         config=flow_model_config,
     )
 
-    return model
+    return model, flow_model_config
 
 if __name__ == "__main__":
 
@@ -228,7 +236,7 @@ if __name__ == "__main__":
     lr_ratio = 10
     scheduler = "OneCycleLR"
     weight_decay = 1.0e-4
-    batch_size=20
+    batch_size=5
 
     normalization_x = False #True
     normalization_y = True
@@ -242,7 +250,6 @@ if __name__ == "__main__":
             device=device,
             parameter=dict(
                 train_samples=20000,
-                batch_size=1024,
                 learning_rate=5e-5 * accelerator.num_processes,
                 iterations=20000 // 1024 * 2000,
                 log_rate=100,
@@ -276,7 +283,7 @@ if __name__ == "__main__":
 
     train_data, test_data = data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights)
 
-    flow_model = model_initialization(device, train_data["x"], train_data["y"])
+    flow_model, flow_model_config = model_initialization(device, train_data["condition"]["x"], train_data["y"])
 
     if config.parameter.model_load_path is not None and os.path.exists(
         config.parameter.model_load_path
@@ -294,7 +301,7 @@ if __name__ == "__main__":
 
     os.makedirs(config.parameter.model_save_path, exist_ok=True)
 
-    n_train, n_test = train_data["x"].shape[0], test_data["x"].shape[0]
+    n_train, n_test = train_data["condition"]["x"].shape[0], test_data["condition"]["x"].shape[0]
     train_rel_l2_losses = []
     test_rel_l2_losses = []
     test_l2_losses = []
@@ -305,8 +312,8 @@ if __name__ == "__main__":
 
     if normalization_x:
         x_normalizer = UnitGaussianNormalizer(train_data["x"], non_normalized_dim = non_normalized_dim_x, normalization_dim=normalization_dim_x)
-        x_train = x_normalizer.encode(train_data["x"])
-        x_test = x_normalizer.encode(test_data["x"])
+        x_train = x_normalizer.encode(train_data["condition"]["x"])
+        x_test = x_normalizer.encode(test_data["condition"]["x"])
         x_normalizer.to(device)
         
     if normalization_y:
@@ -316,8 +323,8 @@ if __name__ == "__main__":
         y_normalizer.to(device)
 
 
-    train_dataset = TensorDictDataset(keys=["x", "y", "node_mask", "nodes", "node_weights", "directed_edges", "edge_gradient_weights"], max_size=n_train)
-    test_dataset = TensorDictDataset(keys=["x", "y", "node_mask", "nodes", "node_weights", "directed_edges", "edge_gradient_weights"], max_size=n_test)
+    train_dataset = TensorDictDataset(keys=["y", "condition"], max_size=n_train)
+    test_dataset = TensorDictDataset(keys=["y", "condition"], max_size=n_test)
     train_dataset.append(train_data, batch_size=n_train)
     test_dataset.append(test_data, batch_size=n_test)
 
@@ -335,10 +342,6 @@ if __name__ == "__main__":
         prefetch=10,
     )
 
-    def get_data(dataloader):
-        while True:
-            yield from dataloader
-
     for iteration in track(
         range(config.parameter.iterations),
         description="Training",
@@ -351,9 +354,32 @@ if __name__ == "__main__":
                 data = train_replay_buffer.sample()
                 data = data.to(device)
 
-                gaussian_process = flow_model.gaussian_process(data["nodes"])
-                x0 = gaussian_process.sample()
-                loss = flow_model.optimal_transport_functional_flow_matching_loss(x0=x0, x1=data["x"], condition=data["condition"])
+                matern_kernel = matern_halfinteger_kernel_batchwise(
+                    X1=data["condition"]["nodes"],
+                    X2=data["condition"]["nodes"],
+                    length_scale=flow_model_config.gaussian_process.args.length_scale,
+                    nu=flow_model_config.gaussian_process.args.nu,
+                    variance=1.0,
+                )
+
+                def sample_from_covariance(C, D):
+                    # Compute Cholesky decomposition; shape [B, N, N]
+                    L = torch.linalg.cholesky(C+1e-6*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0))
+                    
+                    # Generate standard normal noise; shape [B, N, D]
+                    z = torch.randn(C.size(0), C.size(1), D*2, device=C.device, dtype=C.dtype)
+                    
+                    # Batched matrix multiplication; result shape [B, N, 2D]
+                    samples = L @ z
+
+                    # split the samples into two parts
+                    samples = torch.split(samples, [D, D], dim=-1)
+                    
+                    return samples[0], samples[1]
+
+                # gaussian_process = flow_model.gaussian_process(data["nodes"])
+                x0, gaussian_process_samples = sample_from_covariance(matern_kernel, data["y"].shape[-1])
+                loss = flow_model.functional_flow_matching_loss(x0=x0, x1=data["y"], condition=data["condition"], gaussian_process_samples=gaussian_process_samples)
                 optimizer.zero_grad()
                 accelerator.backward(loss)
                 optimizer.step()

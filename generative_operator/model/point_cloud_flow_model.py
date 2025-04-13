@@ -50,7 +50,6 @@ class PointCloudFunctionalFlow(nn.Module):
                         X=X,
                         length_scale=args["length_scale"],
                         nu=args["nu"],
-                        device=self.device,
                     )
                 return initialize_matern_gaussian_process
             else:
@@ -83,6 +82,7 @@ class PointCloudFunctionalFlow(nn.Module):
         self,
         x0: torch.Tensor,
         x1: torch.Tensor,
+        gaussian_process_samples: float,
         condition: torch.Tensor = None,
     ):
         """
@@ -91,9 +91,8 @@ class PointCloudFunctionalFlow(nn.Module):
         Arguments:
             - x0 (tensor): initial condition for sampling
             - x1 (tensor): target condition for sampling
+            - gaussian_process_samples (float): samples from the Gaussian process
             - condition (tensor): condition for sampling
-            - average (bool): whether to average the loss
-            - sum_all_elements (bool): whether to sum all elements of the loss
         Returns:
             - loss (tensor): functional flow matching loss
         """
@@ -102,13 +101,13 @@ class PointCloudFunctionalFlow(nn.Module):
         t_random = (
             torch.rand(batch_size, device=self.device) * self.stochastic_process.t_max
         )
-        x_t = self.stochastic_process.direct_sample(t_random, x0, x1)
+        x_t = self.stochastic_process.direct_sample(t_random, x0, x1, gaussian_process_samples)
 
         velocity_value = self.model(t_random, x_t, condition=condition)
         velocity = self.stochastic_process.velocity(t_random, x0, x1)
 
-        velocity_value_masked = velocity_value * condition["aux"]["node_mask"]
-        velocity_masked = velocity * condition["aux"]["node_mask"]
+        velocity_value_masked = velocity_value * condition["node_mask"]
+        velocity_masked = velocity * condition["node_mask"]
 
         loss = self.loss_function(velocity_value_masked, velocity_masked)
         return loss

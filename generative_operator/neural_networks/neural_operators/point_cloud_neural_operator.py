@@ -863,7 +863,7 @@ class PointCloudNeuralOperator(nn.Module):
             Parameters: 
                 x : Tensor float[batch_size, max_nnomdes, in_dim] 
                     Input data
-                aux : list of Tensor, containing
+                condition : list of Tensor, containing
                     node_mask : Tensor int[batch_size, max_nnomdes, 1]  
                                 1: node; otherwise 0
 
@@ -890,7 +890,7 @@ class PointCloudNeuralOperator(nn.Module):
         length = len(self.ws)
 
         # nodes: float[batch_size, nnodes, ndims]
-        node_mask, nodes, node_weights, directed_edges, edge_gradient_weights = condition["aux"]
+        node_mask, nodes, node_weights, directed_edges, edge_gradient_weights = condition["node_mask"], condition["nodes"], condition["node_weights"], condition["directed_edges"], condition["edge_gradient_weights"]
         # bases: float[batch_size, nnodes, nmodes]
         bases_c,  bases_s,  bases_0  = compute_Fourier_bases(nodes, self.modes * self.sp_L)
         # node_weights: float[batch_size, nnodes, nmeasures]
@@ -900,6 +900,7 @@ class PointCloudNeuralOperator(nn.Module):
         wbases_s = torch.einsum("bxkw,bxw->bxkw", bases_s, node_weights)
         wbases_0 = torch.einsum("bxkw,bxw->bxkw", bases_0, node_weights)
         
+        t = t.unsqueeze(-1).unsqueeze(-1).repeat(1, x.shape[1], 1)
         x = torch.concatenate([t, x], dim=-1)
         x = self.fc0(x)
         x = x.permute(0, 2, 1)

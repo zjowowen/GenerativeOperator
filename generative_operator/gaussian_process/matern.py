@@ -7,7 +7,7 @@ from torch.distributions.utils import lazy_property
 
 def matern_halfinteger_kernel(X1: torch.Tensor,
                               X2: torch.Tensor,
-                              lengthscale: float,
+                              length_scale: float,
                               nu: float,
                               variance: float
                              ) -> torch.Tensor:
@@ -23,8 +23,8 @@ def matern_halfinteger_kernel(X1: torch.Tensor,
             Shape (N, D), representing N points in D dimensions.
         X2 (torch.Tensor):
             Shape (M, D).
-        lengthscale (float):
-            The lengthscale parameter (sometimes denoted ℓ), must be > 0.
+        length_scale (float):
+            The length_scale parameter (sometimes denoted ℓ), must be > 0.
         nu (float):
             The half-integer smoothness parameter: {0.5, 1.5, 2.5, 3.5}.
         variance (float):
@@ -34,8 +34,8 @@ def matern_halfinteger_kernel(X1: torch.Tensor,
         torch.Tensor:
             The (N, M) covariance matrix K(X1, X2).
     """
-    if lengthscale <= 0.0:
-        raise ValueError("lengthscale must be positive.")
+    if length_scale <= 0.0:
+        raise ValueError("length_scale must be positive.")
 
     # Compute pairwise distances
     dists = torch.cdist(X1, X2, p=2)  # [N, M]
@@ -61,21 +61,21 @@ def matern_halfinteger_kernel(X1: torch.Tensor,
 
     if nu == 0.5:
         # Exponential kernel
-        out = variance * torch.exp(-dists_clamped / lengthscale)
+        out = variance * torch.exp(-dists_clamped / length_scale)
     elif nu == 1.5:
         c = math.sqrt(3)
-        term = (1.0 + c * dists_clamped / lengthscale)
-        out = variance * term * torch.exp(-c * dists_clamped / lengthscale)
+        term = (1.0 + c * dists_clamped / length_scale)
+        out = variance * term * torch.exp(-c * dists_clamped / length_scale)
     elif nu == 2.5:
         c = math.sqrt(5)
         r = dists_clamped
-        ell = lengthscale
+        ell = length_scale
         term = (1.0 + c * r / ell + 5.0 * r.pow(2) / (3.0 * ell**2))
         out = variance * term * torch.exp(-c * r / ell)
     elif nu == 3.5:
         c = math.sqrt(7)
         r = dists_clamped
-        ell = lengthscale
+        ell = length_scale
         term = (
             1.0 +
             c * r / ell +
@@ -95,6 +95,80 @@ def matern_halfinteger_kernel(X1: torch.Tensor,
     return out
 
 
+
+def matern_halfinteger_kernel_batchwise(X1: torch.Tensor,
+                              X2: torch.Tensor,
+                              length_scale: float,
+                              nu: float,
+                              variance: float
+                             ) -> torch.Tensor:
+    """
+    Computes the Matern kernel for half-integer ν between batched inputs X1 and X2.
+
+    This function supports ν in {0.5, 1.5, 2.5, 3.5}. Inputs X1 and X2 can have 
+    leading batch dimensions that are broadcastable. For example, shapes [B, N, D] 
+    and [B, M, D] will produce a [B, N, M] output.
+
+    Args:
+        X1 (torch.Tensor):
+            Shape (..., N, D), representing batches of N points in D dimensions.
+        X2 (torch.Tensor):
+            Shape (..., M, D), representing batches of M points in D dimensions.
+        length_scale (float):
+            The length_scale parameter (ℓ), must be > 0.
+        nu (float):
+            The half-integer smoothness parameter: {0.5, 1.5, 2.5, 3.5}.
+        variance (float):
+            The overall variance (σ²).
+
+    Returns:
+        torch.Tensor:
+            The (..., N, M) covariance matrix K(X1, X2) for each batch.
+    """
+    if length_scale <= 0.0:
+        raise ValueError("length_scale must be positive.")
+
+    # Compute pairwise distances for each batch
+    dists = torch.cdist(X1, X2, p=2)  # [..., N, M]
+
+    # Clamp small distances to avoid numerical issues
+    dists_clamped = dists.clamp_min(1e-12)
+
+    # Compute kernel based on nu
+    if nu == 0.5:
+        # Exponential kernel
+        out = variance * torch.exp(-dists_clamped / length_scale)
+    elif nu == 1.5:
+        c = math.sqrt(3)
+        term = (1.0 + c * dists_clamped / length_scale)
+        out = variance * term * torch.exp(-c * dists_clamped / length_scale)
+    elif nu == 2.5:
+        c = math.sqrt(5)
+        ell = length_scale
+        term = (1.0 + c * dists_clamped / ell + 5.0 * dists_clamped.pow(2) / (3.0 * ell**2))
+        out = variance * term * torch.exp(-c * dists_clamped / ell)
+    elif nu == 3.5:
+        c = math.sqrt(7)
+        ell = length_scale
+        term = (
+            1.0 +
+            c * dists_clamped / ell +
+            14.0 * dists_clamped.pow(2) / (5.0 * ell**2) +
+            7.0 * c * dists_clamped.pow(3) / (15.0 * ell**3)
+        )
+        out = variance * term * torch.exp(-c * dists_clamped / ell)
+    else:
+        raise NotImplementedError(
+            f"Matern kernel for nu={nu} is not implemented. "
+            "Only half-integers {0.5, 1.5, 2.5, 3.5} are supported."
+        )
+
+    # Ensure diagonal (where distance is 0) is exactly the variance
+    out = torch.where(dists == 0, variance, out)
+
+    return out
+
+
 class MaternGaussianProcess(Distribution):
     """
     A Gaussian Process with a Matern kernel for half-integer ν values.
@@ -108,7 +182,7 @@ class MaternGaussianProcess(Distribution):
     def __init__(
         self,
         X: torch.Tensor,
-        lengthscale: float = 1.0,
+        length_scale: float = 1.0,
         nu: float = 1.5,
         variance: float = 1.0,
         validate_args=None
@@ -117,8 +191,8 @@ class MaternGaussianProcess(Distribution):
         Args:
             X (torch.Tensor):
                 Input data of shape (N, D).
-            lengthscale (float):
-                Lengthscale parameter ℓ > 0.
+            length_scale (float):
+                length_scale parameter ℓ > 0.
             nu (float):
                 Half-integer smoothness parameter {0.5, 1.5, 2.5, 3.5}.
             variance (float):
@@ -128,7 +202,7 @@ class MaternGaussianProcess(Distribution):
         """
         super().__init__(validate_args=validate_args)
         self.X = X
-        self.lengthscale = lengthscale
+        self.length_scale = length_scale
         self.nu = nu
         self.variance_ = variance
 
@@ -140,7 +214,7 @@ class MaternGaussianProcess(Distribution):
         return matern_halfinteger_kernel(
             self.X,
             self.X,
-            lengthscale=self.lengthscale,
+            length_scale=self.length_scale,
             nu=self.nu,
             variance=self.variance_
         )
@@ -194,7 +268,7 @@ if __name__ == "__main__":
     X = torch.randn(N, D)
 
     # Create a Matern GP with half-integer ν
-    mgp = MaternGaussianProcess(X, lengthscale=1.0, nu=1.5, variance=2.0)
+    mgp = MaternGaussianProcess(X, length_scale=1.0, nu=1.5, variance=2.0)
 
     # Sample from the GP prior
     samples = mgp.sample(sample_shape=(3,))  # 3 samples, each of dimension N
