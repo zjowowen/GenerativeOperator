@@ -398,6 +398,12 @@ if __name__ == "__main__":
 
         if iteration % config.parameter.eval_rate == 0:
             pass
+            # sampled_process = flow_model.sample_process(
+            #     x0=x0,
+            #     t_span=torch.linspace(0.0, 1.0, 10),
+            #     condition=data["condition"],
+            #     with_grad=True,
+            # )
 
         if iteration % config.parameter.checkpoint_rate == 0:
             if accelerator.is_local_main_process:
