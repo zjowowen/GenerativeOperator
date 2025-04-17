@@ -254,17 +254,31 @@ if __name__ == "__main__":
 
     project_name = "PCNO_airfoil"
 
+    # check GPU brand, if NVIDIA RTX 4090 use batch size 4, if NVIDIA A100 use batch size 16
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        if "A100" in gpu_name:
+            batch_size = 16
+        elif "4090" in gpu_name:
+            batch_size = 4
+        else:
+            batch_size = 4
+    else:
+        batch_size = 4
+    print(f"GPU name: {gpu_name}, batch size: {batch_size}")
+
+
     config = EasyDict(
         dict(
             device=device,
             parameter=dict(
-                batch_size=4,
-                warmup_steps=1000 // 4 * 2000 // 100,
+                batch_size=batch_size,
+                warmup_steps=1000 // batch_size * 2000 // 100,
                 learning_rate=5e-5 * accelerator.num_processes,
-                iterations=1000 // 4 * 2000,
+                iterations=1000 // batch_size * 2000,
                 log_rate=100,
-                eval_rate=1000 // 4 * 500,
-                checkpoint_rate=1000 // 4 * 500,
+                eval_rate=1000 // batch_size * 500,
+                checkpoint_rate=1000 // batch_size * 500,
                 video_save_path=f"output/{project_name}/videos",
                 model_save_path=f"output/{project_name}/models",
                 model_load_path=None,
@@ -324,6 +338,10 @@ if __name__ == "__main__":
         prefetch=10,
     )
 
+
+    accelerator.init_trackers("PCNO_airfoil_flow", config=None)
+    accelerator.print("✨ Start training ...")
+
     for iteration in track(
         range(config.parameter.iterations),
         description="Training",
@@ -371,6 +389,7 @@ if __name__ == "__main__":
                 optimizer.zero_grad()
                 accelerator.backward(loss)
                 optimizer.step()
+                scheduler.step()
 
 
         loss = accelerator.gather(loss)
@@ -416,3 +435,5 @@ if __name__ == "__main__":
 
         accelerator.wait_for_everyone()
 
+    accelerator.print("✨ Training complete!")
+    accelerator.end_training()
