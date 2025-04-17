@@ -901,7 +901,7 @@ class PointCloudNeuralOperator(nn.Module):
         wbases_0 = torch.einsum("bxkw,bxw->bxkw", bases_0, node_weights)
         
         t = t.unsqueeze(-1).unsqueeze(-1).repeat(1, x.shape[1], 1)
-        x = torch.concatenate([t, x], dim=-1)
+        x = torch.concatenate([t, x, condition["x"]], dim=-1)
         x = self.fc0(x)
         x = x.permute(0, 2, 1)
 

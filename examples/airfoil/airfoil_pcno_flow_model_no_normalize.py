@@ -223,7 +223,7 @@ def model_initialization(device, x_train, y_train):
                             nmeasures=1,
                             layers=[128,128,128,128,128],
                             fc_dim=128,
-                            in_dim=y_train.shape[-1]+1, 
+                            in_dim=y_train.shape[-1]+1+x_train.shape[-1], 
                             out_dim=y_train.shape[-1],
                             train_sp_L="together",
                             act='gelu'

@@ -7,7 +7,7 @@ import torch.multiprocessing as mp
 
 import matplotlib
 
-matplotlib.use("Agg")
+# matplotlib.use("Agg")
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 
@@ -62,6 +62,10 @@ def data_preprocess(data_path):
                         node_equal_measures=node_equal_measures, node_equal_weights=node_equal_weights, \
                         features=features, \
                         directed_edges=directed_edges, edge_gradient_weights=edge_gradient_weights) 
+    
+    # save nodes_list, elems_list, features_list
+    np.savez_compressed(data_path+"pcno_quad_data_list.npz", \
+                        nodes_list=nodes_list, elems_list=elems_list, features_list=features_list)
 
 
 def load_data(data_path):
@@ -198,7 +202,7 @@ def model_initialization(device, x_train, y_train):
             gaussian_process=dict(
                 type="Matern",
                 args=dict(
-                    length_scale=0.01,
+                    length_scale=0.1, #0.01,
                     nu=1.5,
                 ),
             ),
@@ -267,9 +271,9 @@ if __name__ == "__main__":
                 checkpoint_rate=1000 // 4 * 500,
                 video_save_path=f"output/{project_name}/videos",
                 model_save_path=f"output/{project_name}/models",
-                model_load_path=None,
+                model_load_path=f"output/{project_name}/models/model_50000.pth",
                 normalization_x=False,
-                normalization_y=True,
+                normalization_y=False,
                 normalization_dim_x=[],
                 normalization_dim_y=[],
                 non_normalized_dim_x=3,
@@ -278,7 +282,7 @@ if __name__ == "__main__":
         )
     )
 
-    data_path = "/mnt/d/Dataset/"
+    data_path = "/mnt/d/Dataset/pcno/airfoil/"
     # data_preprocess(data_path)
     nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights = load_data(data_path)
 
@@ -293,22 +297,24 @@ if __name__ == "__main__":
         # pop out _metadata key
         state_dict = torch.load(config.parameter.model_load_path, map_location="cpu")
         state_dict.pop("_metadata", None)
-        flow_model.model.load_state_dict(state_dict)
+        # Create a new dictionary with updated keys
+        prefix = "_orig_mod."
+        new_state_dict = {}
 
-    optimizer = torch.optim.Adam(
-        flow_model.model.parameters(), lr=config.parameter.learning_rate
-    )
+        for key, value in state_dict.items():
+            if key.startswith(prefix):
+                # Remove the prefix from the key
+                new_key = key[len(prefix) :]
+            else:
+                new_key = key
+            new_state_dict[new_key] = value
 
-    scheduler = CosineAnnealingWarmupLR(
-        optimizer,
-        T_max=config.parameter.iterations,
-        eta_min=2e-6,
-        warmup_steps=config.parameter.warmup_steps,
-    )
+        flow_model.model.load_state_dict(new_state_dict)
+        print("Model loaded from: ", config.parameter.model_load_path)
 
-    flow_model.model, optimizer = accelerator.prepare(flow_model.model, optimizer)
 
-    os.makedirs(config.parameter.model_save_path, exist_ok=True)
+
+    flow_model.model = accelerator.prepare(flow_model.model)
 
     train_replay_buffer = TensorDictReplayBuffer(
         storage=train_dataset.storage,
@@ -326,93 +332,93 @@ if __name__ == "__main__":
 
     for iteration in track(
         range(config.parameter.iterations),
-        description="Training",
+        description="Evaluating",
         disable=not accelerator.is_local_main_process,
     ):
-        flow_model.train()
-        with accelerator.autocast():
-            with accelerator.accumulate(flow_model.model):
-                
-                data = train_replay_buffer.sample()
-                data = data.to(device)
 
-                matern_kernel = matern_halfinteger_kernel_batchwise(
-                    X1=data["condition"]["nodes"],
-                    X2=data["condition"]["nodes"],
-                    length_scale=flow_model_config.gaussian_process.args.length_scale,
-                    nu=flow_model_config.gaussian_process.args.nu,
-                    variance=1.0,
-                )
+        data = train_replay_buffer.sample()
+        data = data.to(device)
 
-                def sample_from_covariance(C, D):
-                    # Compute Cholesky decomposition; shape [B, N, N]
-                    L = torch.linalg.cholesky(C+1e-6*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0))
-                    
-                    # Generate standard normal noise; shape [B, N, D]
-                    z = torch.randn(C.size(0), C.size(1), D*2, device=C.device, dtype=C.dtype)
-                    
-                    # Batched matrix multiplication; result shape [B, N, 2D]
-                    samples = L @ z
+        matern_kernel = matern_halfinteger_kernel_batchwise(
+            X1=data["condition"]["nodes"],
+            X2=data["condition"]["nodes"],
+            length_scale=flow_model_config.gaussian_process.args.length_scale,
+            nu=flow_model_config.gaussian_process.args.nu,
+            variance=1.0,
+        )
 
-                    # split the samples into two parts
-                    samples = torch.split(samples, [D, D], dim=-1)
-                    
-                    return samples[0], samples[1]
+        def sample_from_covariance(C, D):
+            # Compute Cholesky decomposition; shape [B, N, N]
+            # L = torch.linalg.cholesky(C+1e-6*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)) # for length scale 0.01
+            L = torch.linalg.cholesky(C+1e-1*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)) # for length scale 0.1
+            # L = torch.linalg.cholesky(C+1e-2*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)) # for length scale 0.5
+            
+            # Generate standard normal noise; shape [B, N, D]
+            z = torch.randn(C.size(0), C.size(1), D*2, device=C.device, dtype=C.dtype)
+            
+            # Batched matrix multiplication; result shape [B, N, 2D]
+            samples = L @ z
 
-                # gaussian_process = flow_model.gaussian_process(data["nodes"])
-                x0, gaussian_process_samples = sample_from_covariance(matern_kernel, data["y"].shape[-1])
+            # split the samples into two parts
+            samples = torch.split(samples, [D, D], dim=-1)
+            
+            return samples[0], samples[1]
 
-                if y_normalizer is not None:
-                    x1 = y_normalizer.encode(data["y"])
-                else:
-                    x1 = data["y"]
+        # gaussian_process = flow_model.gaussian_process(data["nodes"])
+        x0, gaussian_process_samples = sample_from_covariance(matern_kernel, data["y"].shape[-1])
 
-                loss = flow_model.functional_flow_matching_loss(x0=x0, x1=x1, condition=data["condition"], gaussian_process_samples=gaussian_process_samples)
-                optimizer.zero_grad()
-                accelerator.backward(loss)
-                optimizer.step()
+        if y_normalizer is not None:
+            x1 = y_normalizer.encode(data["y"])
+        else:
+            x1 = data["y"]
+
+        loss = flow_model.functional_flow_matching_loss(x0=x0, x1=x1, condition=data["condition"], gaussian_process_samples=gaussian_process_samples)
+
+        sampled_process = flow_model.sample_process(
+            x0=x0,
+            t_span=torch.linspace(0.0, 1.0, 100),
+            condition=data["condition"],
+            # with_grad=True,
+        )
+
+        x1_sampled = sampled_process[-1]
 
 
-        loss = accelerator.gather(loss)
-        if iteration % config.parameter.log_rate == 0:
-            if accelerator.is_local_main_process:
-                to_log = {
-                        "loss/mean": loss.mean().item(),
-                        "iteration": iteration,
-                        "lr": scheduler.get_last_lr()[0],
-                    }
-                
-                if len(loss.shape) == 0:
-                    to_log["loss/std"] = 0
-                    to_log["loss/0"] = loss.item()
-                elif loss.shape[0] > 1:
-                    to_log["loss/std"] = loss.std().item()
-                    for i in range(loss.shape[0]):
-                        to_log[f"loss/{i}"] = loss[i].item()
-                accelerator.log(
-                    to_log,
-                    step=iteration,
-                )
-                acc_train_loss = loss.mean().item()
-                print(f"iteration: {iteration}, train_loss: {acc_train_loss:.5f}, lr: {scheduler.get_last_lr()[0]:.7f}")
+        # plt.pcolormesh(data["condition"]["nodes"][0,:,0].cpu().numpy().reshape(221,51), data["condition"]["nodes"][0,:,1].cpu().numpy().reshape(221,51), x0[0].cpu().numpy().reshape(221,51), shading='nearest')
+        # plt.pcolormesh(data["condition"]["nodes"][0,:,0].cpu().numpy().reshape(221,51), data["condition"]["nodes"][0,:,1].cpu().numpy().reshape(221,51), x1_sampled[0].cpu().numpy().reshape(221,51), shading='gouraud')
+        # plt.tripcolor(data["condition"]["nodes"][0,:,0].cpu().numpy(), data["condition"]["nodes"][0,:,1].cpu().numpy(), x1_sampled[0, :, -1].cpu().numpy(),  triangles=elems[sample_idx], shading='flat', norm=norm) 
+        
+        # plot 2 subplots for x1_sampled and x1, control x range from -0.5 to 1.5, y range from -0.5 to 0.5
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+        fig.suptitle(f"Iteration: {iteration}")
+        axs[0].set_title("x1_sampled")
+        axs[0].set_xlim(-0.5, 1.5)
+        axs[0].set_ylim(-0.5, 0.5)
+        axs[0].set_aspect('equal')
+        axs[0].set_xlabel("x")
+        axs[0].set_ylabel("y")
+        axs[0].set_xticks(np.arange(-0.5, 1.5, 0.25))
+        axs[0].set_yticks(np.arange(-0.5, 0.5, 0.25))
+        axs[0].pcolormesh(data["condition"]["nodes"][0,:,0].cpu().numpy().reshape(221,51), data["condition"]["nodes"][0,:,1].cpu().numpy().reshape(221,51), x1_sampled[0].cpu().numpy().reshape(221,51), shading='gouraud')
+        axs[1].set_title("x1")
+        axs[1].set_xlim(-0.5, 1.5)
+        axs[1].set_ylim(-0.5, 0.5)
+        axs[1].set_aspect('equal')
+        axs[1].set_xlabel("x")
+        axs[1].set_ylabel("y")
+        axs[1].set_xticks(np.arange(-0.5, 1.5, 0.25))
+        axs[1].set_yticks(np.arange(-0.5, 0.5, 0.25))
+        axs[1].pcolormesh(data["condition"]["nodes"][0,:,0].cpu().numpy().reshape(221,51), data["condition"]["nodes"][0,:,1].cpu().numpy().reshape(221,51), x1[0].cpu().numpy().reshape(221,51), shading='gouraud')
 
-        if iteration % config.parameter.eval_rate == 0:
-            pass
-            # sampled_process = flow_model.sample_process(
-            #     x0=x0,
-            #     t_span=torch.linspace(0.0, 1.0, 10),
-            #     condition=data["condition"],
-            #     with_grad=True,
-            # )
+        # color bar show value range for these two plots
+        fig.colorbar(axs[0].collections[0], ax=axs[0], label="x1_sampled")
+        fig.colorbar(axs[1].collections[0], ax=axs[1], label="x1")
+        fig.tight_layout()
 
-        if iteration % config.parameter.checkpoint_rate == 0:
-            if accelerator.is_local_main_process:
-                if not os.path.exists(config.parameter.model_save_path):
-                    os.makedirs(config.parameter.model_save_path)
-                torch.save(
-                    accelerator.unwrap_model(flow_model.model).state_dict(),
-                    f"{config.parameter.model_save_path}/model_{iteration}.pth",
-                )
+        # save fig as png
+        # plt.savefig(f"output/{project_name}/iteration_{iteration}.png")
 
-        accelerator.wait_for_everyone()
+        plt.show()
+        b = 1
+
 
