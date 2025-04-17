@@ -65,7 +65,7 @@ class PointCloudFunctionalFlow(nn.Module):
         if hasattr(config, "solver"):
             self.solver = get_solver(config.solver.type)(**config.solver.args)
 
-        self.loss_function = LpLoss(d=1, p=2, size_average=False)
+        self.loss_function = LpLoss(d=1, p=2, size_average=True)
 
 
     def get_type(self):
@@ -254,6 +254,6 @@ class PointCloudFunctionalFlow(nn.Module):
         velocity_value_masked = velocity_value * condition["node_mask"]
         velocity_masked = velocity * condition["node_mask"]
 
-        loss = self.loss_function(velocity_value_masked, velocity_masked)
+        loss = self.loss_function.abs(velocity_value_masked, velocity_masked)
         return loss
 
