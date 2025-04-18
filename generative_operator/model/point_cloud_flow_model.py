@@ -229,6 +229,7 @@ class PointCloudFunctionalFlow(nn.Module):
         x1: torch.Tensor,
         gaussian_process_samples: float,
         condition: torch.Tensor = None,
+        mse_loss: bool = False,
     ):
         """
         Overview:
@@ -242,6 +243,11 @@ class PointCloudFunctionalFlow(nn.Module):
             - loss (tensor): functional flow matching loss
         """
 
+        def get_loss(velocity_value, velocity):
+            return torch.mean(
+                torch.sum(0.5 * (velocity_value - velocity) ** 2, dim=(1,))
+            )
+
         batch_size = x0.shape[0]
         t_random = (
             torch.rand(batch_size, device=self.device) * self.stochastic_process.t_max
@@ -254,6 +260,9 @@ class PointCloudFunctionalFlow(nn.Module):
         velocity_value_masked = velocity_value * condition["node_mask"]
         velocity_masked = velocity * condition["node_mask"]
 
-        loss = self.loss_function.abs(velocity_value_masked, velocity_masked)
+        if mse_loss:
+            loss = get_loss(velocity_value_masked, velocity_masked)
+        else:
+            loss = self.loss_function.abs(velocity_value_masked, velocity_masked)
         return loss
 
