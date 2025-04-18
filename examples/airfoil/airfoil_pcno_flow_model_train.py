@@ -225,7 +225,7 @@ def model_initialization(device, x_train, y_train):
                             fc_dim=128,
                             in_dim=y_train.shape[-1]+1+x_train.shape[-1], 
                             out_dim=y_train.shape[-1],
-                            train_sp_L="together",
+                            train_sp_L="independently",
                             act='gelu'
                         ),
                     ),
@@ -278,12 +278,12 @@ if __name__ == "__main__":
                 iterations=1000 // batch_size * 2000,
                 log_rate=100,
                 eval_rate=1000 // batch_size * 500,
-                checkpoint_rate=1000 // batch_size * 500,
+                checkpoint_rate=1000 // batch_size * 50,
                 video_save_path=f"output/{project_name}/videos",
                 model_save_path=f"output/{project_name}/models",
                 model_load_path=None,
                 normalization_x=False,
-                normalization_y=True,
+                normalization_y=False,
                 normalization_dim_x=[],
                 normalization_dim_y=[],
                 non_normalized_dim_x=3,
@@ -385,7 +385,7 @@ if __name__ == "__main__":
                 else:
                     x1 = data["y"]
 
-                loss = flow_model.functional_flow_matching_loss(x0=x0, x1=x1, condition=data["condition"], gaussian_process_samples=gaussian_process_samples)
+                loss = flow_model.functional_flow_matching_loss(x0=x0, x1=x1, condition=data["condition"], gaussian_process_samples=gaussian_process_samples, mse_loss=True)
                 optimizer.zero_grad()
                 accelerator.backward(loss)
                 optimizer.step()
