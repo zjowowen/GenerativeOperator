@@ -7,7 +7,7 @@ import torch.multiprocessing as mp
 
 import matplotlib
 
-# matplotlib.use("Agg")
+matplotlib.use("Agg")
 import matplotlib.animation as animation
 import matplotlib.pyplot as plt
 
@@ -202,7 +202,7 @@ def model_initialization(device, x_train, y_train):
             gaussian_process=dict(
                 type="Matern",
                 args=dict(
-                    length_scale=0.1, #0.01,
+                    length_scale=0.01, #0.01,
                     nu=1.5,
                 ),
             ),
@@ -229,7 +229,7 @@ def model_initialization(device, x_train, y_train):
                             fc_dim=128,
                             in_dim=y_train.shape[-1]+1+x_train.shape[-1], 
                             out_dim=y_train.shape[-1],
-                            train_sp_L="together",
+                            train_sp_L="independently",
                             act='gelu'
                         ),
                     ),
@@ -271,7 +271,7 @@ if __name__ == "__main__":
                 checkpoint_rate=1000 // 4 * 500,
                 video_save_path=f"output/{project_name}/videos",
                 model_save_path=f"output/{project_name}/models",
-                model_load_path=f"output/{project_name}/models/model_50000.pth",
+                model_load_path=f"output/{project_name}/models/model_18600.pth",
                 normalization_x=False,
                 normalization_y=False,
                 normalization_dim_x=[],
@@ -319,15 +319,15 @@ if __name__ == "__main__":
     train_replay_buffer = TensorDictReplayBuffer(
         storage=train_dataset.storage,
         batch_size=config.parameter.batch_size,
-        sampler=RandomSampler(),
-        prefetch=10,
+        #sampler=RandomSampler(),
+        #prefetch=10,
     )
 
     test_replay_buffer = TensorDictReplayBuffer(
         storage=test_dataset.storage,
         batch_size=config.parameter.batch_size,
-        sampler=RandomSampler(),
-        prefetch=10,
+        #sampler=RandomSampler(),
+        #prefetch=10,
     )
 
     for iteration in track(
@@ -349,8 +349,8 @@ if __name__ == "__main__":
 
         def sample_from_covariance(C, D):
             # Compute Cholesky decomposition; shape [B, N, N]
-            # L = torch.linalg.cholesky(C+1e-6*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)) # for length scale 0.01
-            L = torch.linalg.cholesky(C+1e-1*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)) # for length scale 0.1
+            L = torch.linalg.cholesky(C+1e-6*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)) # for length scale 0.01
+            # L = torch.linalg.cholesky(C+1e-1*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)) # for length scale 0.1
             # L = torch.linalg.cholesky(C+1e-2*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)) # for length scale 0.5
             
             # Generate standard normal noise; shape [B, N, D]
@@ -416,9 +416,9 @@ if __name__ == "__main__":
         fig.tight_layout()
 
         # save fig as png
-        # plt.savefig(f"output/{project_name}/iteration_{iteration}.png")
+        plt.savefig(f"output/{project_name}/iteration_{iteration}.png")
 
-        plt.show()
-        b = 1
+        #plt.show()
+        #b = 1
 
 
