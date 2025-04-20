@@ -3,7 +3,7 @@ from typing import Union
 import torch
 
 
-from airfoil_generation.model.probability_path import ConditionalProbabilityPath
+from generative_operator.model.probability_path import ConditionalProbabilityPath
 
 
 class StochasticProcess:
@@ -93,6 +93,7 @@ class StochasticProcess:
         t: torch.Tensor,
         x0: torch.Tensor,
         x1: torch.Tensor,
+        gaussian_process_samples: float = None,
         condition: torch.Tensor = None,
     ) -> torch.Tensor:
         """
@@ -102,16 +103,20 @@ class StochasticProcess:
             t (:obj:`torch.Tensor`): The input time.
             x0 (:obj:`torch.Tensor`): The input state at time 0.
             x1 (:obj:`torch.Tensor`): The input state at time 1.
+            gaussian_process_samples (:obj:`torch.Tensor`): The input samples from the Gaussian process.
             condition (:obj:`torch.Tensor`): The input condition.
         """
 
         # TODO: make it compatible with TensorDict
 
-        return self.mean(t, x0, x1, condition) + self.std(
-            t, x0, x1, condition
-        ) * self.gaussian_process.sample_from_prior(
-            dims=x1.shape[2:], n_samples=x1.shape[0], n_channels=x1.shape[1]
-        )
+        if gaussian_process_samples is not None:
+            return self.mean(t, x0, x1, condition) + self.std(t, x0, x1, condition) * gaussian_process_samples.to(x0.device)
+        else:
+            return self.mean(t, x0, x1, condition) + self.std(
+                t, x0, x1, condition
+            ) * self.gaussian_process.sample_from_prior(
+                dims=x1.shape[2:], n_samples=x1.shape[0], n_channels=x1.shape[1]
+            )
 
     def direct_sample_with_noise(
         self,

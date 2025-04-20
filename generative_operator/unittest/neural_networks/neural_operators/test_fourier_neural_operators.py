@@ -58,7 +58,6 @@ class TestMakePosnEmbed(unittest.TestCase):
         self.assertGreaterEqual(emb.min().item(), 0.0)
         self.assertLessEqual(emb.max().item(), 1.0)
 
-
 def test_fno_with_condition():
     # Instantiate the model
     model = FourierNeuralOperator(
@@ -90,6 +89,37 @@ def test_fno_with_condition():
     # Optional: check for non-nan or non-inf values
     assert torch.isfinite(output).all(), "Output contains invalid values (NaN or Inf)."
 
+def test_fno_without_condition():
+    # Instantiate the model
+    model = FourierNeuralOperator(
+        modes=4,
+        x_channels=3,
+        hidden_channels=8,
+        proj_channels=8,
+        x_dim=2,
+        condition_channels=None,
+        t_scaling=2.0,
+    )
+
+    # Create inputs
+    batch_size = 2
+    height, width = 32, 32
+    t = torch.tensor([1.0, 2.0])  # Time tensor for each item in the batch
+    x = torch.randn(batch_size, 3, height, width)
+
+    # Forward pass
+    output = model(t, x)
+
+    # Assertions
+    assert output.shape == (batch_size, 3, height, width), (
+        f"Output shape {output.shape} does not match expected "
+        f"(batch_size, vis_channels, height, width)."
+    )
+
+    # Optional: check for non-nan or non-inf values
+    assert torch.isfinite(output).all(), "Output contains invalid values (NaN or Inf)."
+
 if __name__ == '__main__':
+    test_fno_without_condition()
     test_fno_with_condition()
     unittest.main()
