@@ -788,7 +788,7 @@ class PointCloudNeuralOperator(nn.Module):
                 Point cloud neural operator
 
         """
-        self.modes = modes
+        self.modes = nn.Parameter(modes, requires_grad = False)
         self.nmeasures = nmeasures
         
 
