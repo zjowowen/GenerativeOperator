@@ -1,3 +1,15 @@
+'''
+Download darcy equation data from 
+
+Google drive
+https://drive.google.com/drive/folders/1UnbQh2WWc6knEHbLn-ZaXrKUZhp7pjt-
+
+
+Darcy_421.zip
+piececonst_r421_N1024_smooth1.mat
+piececonst_r421_N1024_smooth2.mat
+'''
+
 import datetime
 import argparse
 
@@ -44,32 +56,38 @@ from generative_operator.neural_networks.neural_operators.point_cloud_data_proce
 from generative_operator.gaussian_process.matern import matern_halfinteger_kernel_batchwise
 from generative_operator.utils.normalizer import UnitGaussianNormalizer
 
-'''
-Download flow over airfoil (Euler equation) data from 
-
-Google drive:
-https://drive.google.com/drive/folders/1JUkPbx0-lgjFHPURH_kp1uqjfRn3aw9-
-
-
-NACA_Cylinder_X.npy
-NACA_Cylinder_Y.npy
-NACA_Cylinder_Q.npy
-'''
+from scipy.io import loadmat
 
 data_path = "/mnt/d/Dataset/"
 
+downsample_ratio = 2
 
-print("Loading Data")
-coordx    = np.load(data_path+"NACA_Cylinder_X.npy")
-coordy    = np.load(data_path+"NACA_Cylinder_Y.npy")
-data_out  = np.load(data_path+"NACA_Cylinder_Q.npy")[:,4,:,:] #density, velocity 2d, pressure, mach number
 
-nodes_list, elems_list, features_list = convert_structured_data([coordx, coordy], data_out[...,np.newaxis], nnodes_per_elem = 4, feature_include_coords = False)
 
+data1 = loadmat(data_path+"piececonst_r421_N1024_smooth1")
+data2 = loadmat(data_path+"piececonst_r421_N1024_smooth2")
+
+indices = np.concatenate((np.arange(0, 1000), np.arange(2048 - 200, 2048)))
+data_in = np.vstack((data1["coeff"], data2["coeff"]))[indices, 0::downsample_ratio, 0::downsample_ratio]  # shape: 1200,421,421
+data_out = np.vstack((data1["sol"], data2["sol"]))[indices, 0::downsample_ratio, 0::downsample_ratio]     # shape: 1200,421,421
+
+# data_in = np.vstack((data1["coeff"], data2["coeff"]))[:, 0::downsample_ratio, 0::downsample_ratio]  # shape: 2048,421,421
+# data_out = np.vstack((data1["sol"], data2["sol"]))[:, 0::downsample_ratio, 0::downsample_ratio]     # shape: 2048,421,421
+features = np.stack((data_in, data_out), axis=3)
+ndata = data_in.shape[0]
+
+Np = data_in.shape[1]
+L = 1.0
+grid_1d = np.linspace(0, L, Np)
+grid_x, grid_y = np.meshgrid(grid_1d, grid_1d)
+grid_x, grid_y = grid_x.T, grid_y.T
+
+nodes_list, elems_list, features_list = convert_structured_data([np.tile(grid_x, (ndata, 1, 1)), np.tile(grid_y, (ndata, 1, 1))], features, nnodes_per_elem = 4, feature_include_coords = False)
+#uniform weights
 nnodes, node_mask, nodes, node_measures_raw, features, directed_edges, edge_gradient_weights = preprocess_data(nodes_list, elems_list, features_list)
 node_measures, node_weights = compute_node_weights(nnodes,  node_measures_raw,  equal_measure = False)
 node_equal_measures, node_equal_weights = compute_node_weights(nnodes,  node_measures_raw,  equal_measure = True)
-np.savez_compressed(data_path+"pcno_quad_data.npz", \
+np.savez_compressed(data_path+"pcno_quad_data_"+str(downsample_ratio)+".npz", \
                     nnodes=nnodes, node_mask=node_mask, nodes=nodes, \
                     node_measures_raw = node_measures_raw, \
                     node_measures=node_measures, node_weights=node_weights, \
