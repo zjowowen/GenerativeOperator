@@ -1,5 +1,6 @@
 import os
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -19,49 +20,113 @@ from generative_operator.model.point_cloud_flow_model import PointCloudFunctiona
 from generative_operator.utils.optimizer import CosineAnnealingWarmupLR
 from generative_operator.dataset.tensordict_dataset import TensorDictDataset
 
-from generative_operator.neural_networks.neural_operators.point_cloud_neural_operator import preprocess_data, compute_node_weights, compute_Fourier_modes
-from generative_operator.neural_networks.neural_operators.point_cloud_data_process import convert_structured_data
+from generative_operator.neural_networks.neural_operators.point_cloud_neural_operator import (
+    preprocess_data,
+    compute_node_weights,
+    compute_Fourier_modes,
+)
+from generative_operator.neural_networks.neural_operators.point_cloud_data_process import (
+    convert_structured_data,
+)
 
-from generative_operator.gaussian_process.matern import matern_halfinteger_kernel_batchwise
+from generative_operator.gaussian_process.matern import (
+    matern_halfinteger_kernel_batchwise,
+)
 from generative_operator.utils.normalizer import UnitGaussianNormalizer
 
 
-def data_preprocess(data_path, file_name = "pcno_quad_data.npz"):
+def data_preprocess(data_path, file_name="pcno_quad_data.npz"):
     coordx = np.load(os.path.join(data_path, "NACA_Cylinder_X.npy"))
     coordy = np.load(os.path.join(data_path, "NACA_Cylinder_Y.npy"))
-    data_out = np.load(os.path.join(data_path, "NACA_Cylinder_Q.npy"))[:, 4, :, :]  # density, velocity 2d, pressure, mach number
+    data_out = np.load(os.path.join(data_path, "NACA_Cylinder_Q.npy"))[
+        :, 4, :, :
+    ]  # density, velocity 2d, pressure, mach number
 
-    nodes_list, elems_list, features_list = convert_structured_data([coordx, coordy], data_out[...,np.newaxis], nnodes_per_elem = 4, feature_include_coords = False)
-    
-    nnodes, node_mask, nodes, node_measures_raw, features, directed_edges, edge_gradient_weights = preprocess_data(nodes_list, elems_list, features_list)
-    node_measures, node_weights = compute_node_weights(nnodes,  node_measures_raw,  equal_measure = False)
-    node_equal_measures, node_equal_weights = compute_node_weights(nnodes,  node_measures_raw,  equal_measure = True)
-    np.savez_compressed(os.path.join(data_path, file_name), \
-                        nnodes=nnodes, node_mask=node_mask, nodes=nodes, \
-                        node_measures_raw = node_measures_raw, \
-                        node_measures=node_measures, node_weights=node_weights, \
-                        node_equal_measures=node_equal_measures, node_equal_weights=node_equal_weights, \
-                        features=features, \
-                        directed_edges=directed_edges, edge_gradient_weights=edge_gradient_weights) 
+    nodes_list, elems_list, features_list = convert_structured_data(
+        [coordx, coordy],
+        data_out[..., np.newaxis],
+        nnodes_per_elem=4,
+        feature_include_coords=False,
+    )
+
+    (
+        nnodes,
+        node_mask,
+        nodes,
+        node_measures_raw,
+        features,
+        directed_edges,
+        edge_gradient_weights,
+    ) = preprocess_data(nodes_list, elems_list, features_list)
+    node_measures, node_weights = compute_node_weights(
+        nnodes, node_measures_raw, equal_measure=False
+    )
+    node_equal_measures, node_equal_weights = compute_node_weights(
+        nnodes, node_measures_raw, equal_measure=True
+    )
+    np.savez_compressed(
+        os.path.join(data_path, file_name),
+        nnodes=nnodes,
+        node_mask=node_mask,
+        nodes=nodes,
+        node_measures_raw=node_measures_raw,
+        node_measures=node_measures,
+        node_weights=node_weights,
+        node_equal_measures=node_equal_measures,
+        node_equal_weights=node_equal_weights,
+        features=features,
+        directed_edges=directed_edges,
+        edge_gradient_weights=edge_gradient_weights,
+    )
 
 
-def load_data(data_path, file_name = "pcno_quad_data.npz"):
+def load_data(data_path, file_name="pcno_quad_data.npz"):
     equal_weights = True
 
     data = np.load(os.path.join(data_path, file_name))
     nnodes, node_mask, nodes = data["nnodes"], data["node_mask"], data["nodes"]
     node_weights = data["node_equal_weights"] if equal_weights else data["node_weights"]
     node_measures = data["node_measures"]
-    directed_edges, edge_gradient_weights = data["directed_edges"], data["edge_gradient_weights"]
+    directed_edges, edge_gradient_weights = (
+        data["directed_edges"],
+        data["edge_gradient_weights"],
+    )
     features = data["features"]
 
     node_measures_raw = data["node_measures_raw"]
     indices = np.isfinite(node_measures_raw)
     node_rhos = np.copy(node_weights)
-    node_rhos[indices] = node_rhos[indices]/node_measures[indices]
-    return nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights
+    node_rhos[indices] = node_rhos[indices] / node_measures[indices]
+    return (
+        nnodes,
+        node_mask,
+        nodes,
+        node_weights,
+        node_rhos,
+        features,
+        directed_edges,
+        edge_gradient_weights,
+    )
 
-def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights, n_train=1000, n_test=200):
+
+def data_preparition_with_tensordict(
+    nnodes,
+    node_mask,
+    nodes,
+    node_weights,
+    node_rhos,
+    features,
+    directed_edges,
+    edge_gradient_weights,
+    n_train=1000,
+    n_test=200,
+    normalization_x=False,
+    normalization_y=False,
+    normalization_dim_x=[],
+    normalization_dim_y=[],
+    non_normalized_dim_x=3,
+    non_normalized_dim_y=0,
+):
     print("Casting to tensor")
     nnodes = torch.from_numpy(nnodes)
     node_mask = torch.from_numpy(node_mask)
@@ -76,15 +141,18 @@ def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, nod
     nodes_input = nodes.clone()
 
     train_data = TensorDict(
-        {   "y": features[:n_train,...],
+        {
+            "y": features[:n_train, ...],
             "condition": TensorDict(
                 {
-                    "x": torch.cat((nodes_input[:n_train, ...], node_rhos[:n_train, ...]), -1),
-                    "node_mask": node_mask[0:n_train,...],
-                    "nodes": nodes[0:n_train,...],
-                    "node_weights": node_weights[0:n_train,...],
-                    "directed_edges": directed_edges[0:n_train,...],
-                    "edge_gradient_weights": edge_gradient_weights[0:n_train,...]
+                    "x": torch.cat(
+                        (nodes_input[:n_train, ...], node_rhos[:n_train, ...]), -1
+                    ),
+                    "node_mask": node_mask[0:n_train, ...],
+                    "nodes": nodes[0:n_train, ...],
+                    "node_weights": node_weights[0:n_train, ...],
+                    "directed_edges": directed_edges[0:n_train, ...],
+                    "edge_gradient_weights": edge_gradient_weights[0:n_train, ...],
                 },
                 batch_size=(n_train,),
             ),
@@ -92,15 +160,18 @@ def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, nod
         batch_size=(n_train,),
     )
     test_data = TensorDict(
-        {   "y": features[-n_test:,...],
+        {
+            "y": features[-n_test:, ...],
             "condition": TensorDict(
                 {
-                    "x": torch.cat((nodes_input[-n_test:, ...], node_rhos[-n_test:, ...]),-1),
-                    "node_mask": node_mask[-n_test:,...],
-                    "nodes": nodes[-n_test:,...],
-                    "node_weights": node_weights[-n_test:,...],
-                    "directed_edges": directed_edges[-n_test:,...],
-                    "edge_gradient_weights": edge_gradient_weights[-n_test:,...]
+                    "x": torch.cat(
+                        (nodes_input[-n_test:, ...], node_rhos[-n_test:, ...]), -1
+                    ),
+                    "node_mask": node_mask[-n_test:, ...],
+                    "nodes": nodes[-n_test:, ...],
+                    "node_weights": node_weights[-n_test:, ...],
+                    "directed_edges": directed_edges[-n_test:, ...],
+                    "edge_gradient_weights": edge_gradient_weights[-n_test:, ...],
                 },
                 batch_size=(n_test,),
             ),
@@ -108,16 +179,27 @@ def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, nod
         batch_size=(n_test,),
     )
 
-    n_train, n_test = train_data["condition"]["x"].shape[0], test_data["condition"]["x"].shape[0]
+    n_train, n_test = (
+        train_data["condition"]["x"].shape[0],
+        test_data["condition"]["x"].shape[0],
+    )
 
-    if config.parameter.normalization_x:
-        x_normalizer = UnitGaussianNormalizer(train_data["x"], non_normalized_dim = config.parameter.non_normalized_dim_x, normalization_dim=config.parameter.normalization_dim_x)
+    if normalization_x:
+        x_normalizer = UnitGaussianNormalizer(
+            train_data["x"],
+            non_normalized_dim=non_normalized_dim_x,
+            normalization_dim=normalization_dim_x,
+        )
         x_normalizer.to(device)
     else:
         x_normalizer = None
-        
-    if config.parameter.normalization_y:
-        y_normalizer = UnitGaussianNormalizer(train_data["y"], non_normalized_dim = config.parameter.non_normalized_dim_y, normalization_dim=config.parameter.normalization_dim_y)
+
+    if normalization_y:
+        y_normalizer = UnitGaussianNormalizer(
+            train_data["y"],
+            non_normalized_dim=non_normalized_dim_y,
+            normalization_dim=normalization_dim_y,
+        )
         y_normalizer.to(device)
     else:
         y_normalizer = None
@@ -129,9 +211,11 @@ def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, nod
 
     return train_dataset, test_dataset, x_normalizer, y_normalizer
 
-def model_initialization(device, x_train, y_train, kx_max=32, ky_max=16, Lx=4.0, Ly=4.0, ndims=2):
 
-    modes = compute_Fourier_modes(ndims, [kx_max,ky_max], [Lx, Ly])
+def model_initialization(
+    device, x_train, y_train, kx_max=32, ky_max=16, Lx=4.0, Ly=4.0, ndims=2
+):
+    modes = compute_Fourier_modes(ndims, [kx_max, ky_max], [Lx, Ly])
     modes = torch.tensor(modes, dtype=torch.float).to(device)
 
     flow_model_config = EasyDict(
@@ -160,15 +244,15 @@ def model_initialization(device, x_train, y_train, kx_max=32, ky_max=16, Lx=4.0,
                     backbone=dict(
                         type="PointCloudNeuralOperator",
                         args=dict(
-                            ndims=ndims, 
-                            modes=modes, 
+                            ndims=ndims,
+                            modes=modes,
                             nmeasures=1,
-                            layers=[128,128,128,128,128],
+                            layers=[128, 128, 128, 128, 128],
                             fc_dim=128,
-                            in_dim=y_train.shape[-1]+1+x_train.shape[-1], 
+                            in_dim=y_train.shape[-1] + 1 + x_train.shape[-1],
                             out_dim=y_train.shape[-1],
                             train_sp_L="independently",
-                            act='gelu'
+                            act="gelu",
                         ),
                     ),
                 ),
@@ -182,10 +266,11 @@ def model_initialization(device, x_train, y_train, kx_max=32, ky_max=16, Lx=4.0,
 
     return model, flow_model_config
 
-if __name__ == "__main__":
 
+if __name__ == "__main__":
     # argparse project_name
     import argparse
+
     parser = argparse.ArgumentParser(description="PCNO flow model training")
     parser.add_argument(
         "--project_name",
@@ -202,33 +287,39 @@ if __name__ == "__main__":
     parser.add_argument(
         "--data_path",
         type=str,
-        default="data/",
+        default="/mnt/d/Dataset/",  # "data/",
         help="Path to the data",
     )
     parser.add_argument(
         "--data_preprocess",
-        action="store_false",
+        action="store_true",
         help="Whether to preprocess the data",
+    )
+    parser.add_argument(
+        "--wandb",
+        action="store_false",
+        help="Whether to use wandb",
     )
     args = parser.parse_args()
     project_name = args.project_name
     seed = args.seed
 
-
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
-    accelerator = Accelerator(log_with=None, kwargs_handlers=[ddp_kwargs])
+    accelerator = Accelerator(
+        log_with="wandb" if args.wandb else None, kwargs_handlers=[ddp_kwargs]
+    )
     device = accelerator.device
     state = AcceleratorState()
 
     # Get the process rank
     process_rank = state.process_index
-    set_seed(seed=seed+process_rank)
+    set_seed(seed=seed + process_rank)
     print(f"Process rank: {process_rank}")
 
     # check GPU brand, if NVIDIA RTX 4090 use batch size 4, if NVIDIA A100 use batch size 16
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
-        if "A100" or "A800" in gpu_name:
+        if "A100" in gpu_name or "A800" in gpu_name:
             batch_size = 16
         elif "4090" in gpu_name:
             batch_size = 4
@@ -239,41 +330,67 @@ if __name__ == "__main__":
         gpu_name = "CPU"
         batch_size = 4
         print(f"CPU, batch size: {batch_size}")
-    
+
+    if args.data_preprocess:
+        data_preprocess(args.data_path, file_name="pcno_quad_data.npz")
+    data_path = args.data_path
+
+    (
+        nnodes,
+        node_mask,
+        nodes,
+        node_weights,
+        node_rhos,
+        features,
+        directed_edges,
+        edge_gradient_weights,
+    ) = load_data(data_path)
+
+    (
+        train_dataset,
+        test_dataset,
+        x_normalizer,
+        y_normalizer,
+    ) = data_preparition_with_tensordict(
+        nnodes,
+        node_mask,
+        nodes,
+        node_weights,
+        node_rhos,
+        features,
+        directed_edges,
+        edge_gradient_weights,
+    )
+
+    flow_model, flow_model_config = model_initialization(
+        device, train_dataset["condition"]["x"], train_dataset["y"]
+    )
+
+    # Set the number of iterations and warmup steps
+    data_size = len(train_dataset)
+    iterations = data_size // batch_size * 2000 + 1
+    warmup_steps = iterations // 100
+    eval_rate = iterations // 100
+    checkpoint_rate = iterations // 100
+    iterations_per_epoch = data_size // batch_size // accelerator.num_processes
+
     config = EasyDict(
         dict(
             device=device,
             parameter=dict(
                 batch_size=batch_size,
-                warmup_steps=1000 // batch_size * 2000 // 100,
+                warmup_steps=warmup_steps,
                 learning_rate=5e-5 * accelerator.num_processes,
-                iterations=1000 // batch_size * 2000,
+                iterations=iterations,
                 log_rate=100,
-                eval_rate=1000 // batch_size * 50,
-                checkpoint_rate=1000 // batch_size * 50,
+                eval_rate=eval_rate,
+                checkpoint_rate=checkpoint_rate,
                 video_save_path=f"output/{project_name}/videos",
                 model_save_path=f"output/{project_name}/models",
                 model_load_path=None,
-                normalization_x=False,
-                normalization_y=False,
-                normalization_dim_x=[],
-                normalization_dim_y=[],
-                non_normalized_dim_x=3,
-                non_normalized_dim_y=0,
             ),
         )
     )
-
-    if args.data_preprocess:
-        data_preprocess(args.data_path, file_name = "pcno_quad_data.npz")
-    data_path = args.data_path
-
-    nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights = load_data(data_path)
-
-    train_dataset, test_dataset, x_normalizer, y_normalizer = data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights)
-
-    flow_model, flow_model_config = model_initialization(device, train_dataset["condition"]["x"], train_dataset["y"])
-
 
     if config.parameter.model_load_path is not None and os.path.exists(
         config.parameter.model_load_path
@@ -325,8 +442,7 @@ if __name__ == "__main__":
         prefetch=10,
     )
 
-
-    accelerator.init_trackers("PCNO_airfoil_flow", config=None)
+    accelerator.init_trackers(project_name=project_name, config=None)
     accelerator.print("✨ Start training ...")
 
     for iteration in track(
@@ -337,7 +453,6 @@ if __name__ == "__main__":
         flow_model.train()
         with accelerator.autocast():
             with accelerator.accumulate(flow_model.model):
-                
                 data = train_replay_buffer.sample()
                 data = data.to(device)
 
@@ -351,43 +466,57 @@ if __name__ == "__main__":
 
                 def sample_from_covariance(C, D):
                     # Compute Cholesky decomposition; shape [B, N, N]
-                    L = torch.linalg.cholesky(C+1e-6*torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0))
-                    
+                    L = torch.linalg.cholesky(
+                        C
+                        + 1e-6
+                        * torch.eye(
+                            C.size(1), device=C.device, dtype=C.dtype
+                        ).unsqueeze(0)
+                    )
+
                     # Generate standard normal noise; shape [B, N, D]
-                    z = torch.randn(C.size(0), C.size(1), D*2, device=C.device, dtype=C.dtype)
-                    
+                    z = torch.randn(
+                        C.size(0), C.size(1), D * 2, device=C.device, dtype=C.dtype
+                    )
+
                     # Batched matrix multiplication; result shape [B, N, 2D]
                     samples = L @ z
 
                     # split the samples into two parts
                     samples = torch.split(samples, [D, D], dim=-1)
-                    
+
                     return samples[0], samples[1]
 
                 # gaussian_process = flow_model.gaussian_process(data["nodes"])
-                x0, gaussian_process_samples = sample_from_covariance(matern_kernel, data["y"].shape[-1])
+                x0, gaussian_process_samples = sample_from_covariance(
+                    matern_kernel, data["y"].shape[-1]
+                )
 
                 if y_normalizer is not None:
                     x1 = y_normalizer.encode(data["y"])
                 else:
                     x1 = data["y"]
 
-                loss = flow_model.functional_flow_matching_loss(x0=x0, x1=x1, condition=data["condition"], gaussian_process_samples=gaussian_process_samples, mse_loss=True)
+                loss = flow_model.functional_flow_matching_loss(
+                    x0=x0,
+                    x1=x1,
+                    condition=data["condition"],
+                    gaussian_process_samples=gaussian_process_samples,
+                    mse_loss=True,
+                )
                 optimizer.zero_grad()
                 accelerator.backward(loss)
                 optimizer.step()
                 scheduler.step()
 
-
         loss = accelerator.gather(loss)
-        if iteration % config.parameter.log_rate == 0:
-            if accelerator.is_local_main_process:
-                to_log = {
-                        "loss/mean": loss.mean().item(),
-                        "iteration": iteration,
-                        "lr": scheduler.get_last_lr()[0],
-                    }
-                
+        if accelerator.is_local_main_process:
+            to_log = {}
+            if iteration % config.parameter.log_rate == 0:
+                to_log["iteration"] = iteration
+                to_log["epoch"] = iteration // iterations_per_epoch
+                to_log["lr"] = scheduler.get_last_lr()[0]
+
                 if len(loss.shape) == 0:
                     to_log["loss/std"] = 0
                     to_log["loss/0"] = loss.item()
@@ -395,35 +524,62 @@ if __name__ == "__main__":
                     to_log["loss/std"] = loss.std().item()
                     for i in range(loss.shape[0]):
                         to_log[f"loss/{i}"] = loss[i].item()
+                acc_train_loss = loss.mean().item()
+                print(
+                    f"iteration: {iteration}, epoch: {iteration // iterations_per_epoch}, train_loss: {acc_train_loss:.5f}, lr: {scheduler.get_last_lr()[0]:.7f}"
+                )
 
-                if iteration % config.parameter.eval_rate == 0:
-                    flow_model.eval()
-                    x1_sampled = flow_model.sample(
-                        x0=x0,
-                        t_span=torch.linspace(0.0, 1.0, 100),
-                        condition=data["condition"],
-                    )
+            if iteration % config.parameter.eval_rate == 0:
+                flow_model.eval()
+                x1_sampled = flow_model.sample(
+                    x0=x0,
+                    t_span=torch.linspace(0.0, 1.0, 100),
+                    condition=data["condition"],
+                )
 
+                def plot_2d(data, x1_sampled, x1, title):
                     fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-                    fig.suptitle(f"Iteration: {iteration}")
+                    fig.suptitle(f"Iteration: {iteration}, {title}")
                     axs[0].set_title("x1_sampled")
                     axs[0].set_xlim(-0.5, 1.5)
                     axs[0].set_ylim(-0.5, 0.5)
-                    axs[0].set_aspect('equal')
+                    axs[0].set_aspect("equal")
                     axs[0].set_xlabel("x")
                     axs[0].set_ylabel("y")
                     axs[0].set_xticks(np.arange(-0.5, 1.5, 0.25))
                     axs[0].set_yticks(np.arange(-0.5, 0.5, 0.25))
-                    axs[0].pcolormesh(data["condition"]["nodes"][0,:,0].cpu().numpy().reshape(221,51), data["condition"]["nodes"][0,:,1].cpu().numpy().reshape(221,51), x1_sampled[0].cpu().numpy().reshape(221,51), shading='gouraud')
+                    axs[0].pcolormesh(
+                        data["condition"]["nodes"][0, :, 0]
+                        .cpu()
+                        .numpy()
+                        .reshape(221, 51),
+                        data["condition"]["nodes"][0, :, 1]
+                        .cpu()
+                        .numpy()
+                        .reshape(221, 51),
+                        x1_sampled[0].cpu().numpy().reshape(221, 51),
+                        shading="gouraud",
+                    )
                     axs[1].set_title("x1")
                     axs[1].set_xlim(-0.5, 1.5)
                     axs[1].set_ylim(-0.5, 0.5)
-                    axs[1].set_aspect('equal')
+                    axs[1].set_aspect("equal")
                     axs[1].set_xlabel("x")
                     axs[1].set_ylabel("y")
                     axs[1].set_xticks(np.arange(-0.5, 1.5, 0.25))
                     axs[1].set_yticks(np.arange(-0.5, 0.5, 0.25))
-                    axs[1].pcolormesh(data["condition"]["nodes"][0,:,0].cpu().numpy().reshape(221,51), data["condition"]["nodes"][0,:,1].cpu().numpy().reshape(221,51), x1[0].cpu().numpy().reshape(221,51), shading='gouraud')
+                    axs[1].pcolormesh(
+                        data["condition"]["nodes"][0, :, 0]
+                        .cpu()
+                        .numpy()
+                        .reshape(221, 51),
+                        data["condition"]["nodes"][0, :, 1]
+                        .cpu()
+                        .numpy()
+                        .reshape(221, 51),
+                        x1[0].cpu().numpy().reshape(221, 51),
+                        shading="gouraud",
+                    )
 
                     # color bar show value range for these two plots
                     fig.colorbar(axs[0].collections[0], ax=axs[0], label="x1_sampled")
@@ -431,18 +587,39 @@ if __name__ == "__main__":
                     fig.tight_layout()
 
                     # save fig as png
-                    plt.savefig(f"output/{project_name}/iteration_{iteration}.png")
+                    plt.savefig(f"output/{project_name}/{title}_iteration_{iteration}.png")
                     fig.clear()
                     plt.close(fig)
 
-                    to_log["reconstruction_error"] = torch.mean(torch.abs(x1_sampled - x1)).item()
+                plot_2d(data, x1_sampled, x1, "train_data")
 
+                data_test = test_replay_buffer.sample()
+                data_test = data_test.to(device)
+
+                if y_normalizer is not None:
+                    x1_test = y_normalizer.encode(data_test["y"])
+                else:
+                    x1_test = data_test["y"]
+
+                x1_sampled_test = flow_model.sample(
+                    x0=x0,
+                    t_span=torch.linspace(0.0, 1.0, 100),
+                    condition=data_test["condition"],
+                )
+                plot_2d(data_test, x1_sampled_test, x1_test, "test_data")
+
+                to_log["reconstruction_error_train_dataset"] = torch.mean(
+                    torch.abs(x1_sampled - x1)
+                ).item()
+                to_log["reconstruction_error_test_dataset"] = torch.mean(
+                    torch.abs(x1_sampled_test - x1_test)
+                ).item()
+
+            if len(list(to_log.keys())) > 0:
                 accelerator.log(
                     to_log,
                     step=iteration,
                 )
-                acc_train_loss = loss.mean().item()
-                print(f"iteration: {iteration}, train_loss: {acc_train_loss:.5f}, lr: {scheduler.get_last_lr()[0]:.7f}")
 
         if iteration % config.parameter.checkpoint_rate == 0:
             if accelerator.is_local_main_process:
