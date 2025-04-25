@@ -1,61 +1,42 @@
-import datetime
-import argparse
-
 import os
-import torch.multiprocessing as mp
-
-
 import matplotlib
-
 matplotlib.use("Agg")
-import matplotlib.animation as animation
 import matplotlib.pyplot as plt
-
 import numpy as np
 import torch
-import torch.nn as nn
-
 from tensordict import TensorDict
 from torchrl.data import TensorDictReplayBuffer
-from torchrl.data.replay_buffers.samplers import SamplerWithoutReplacement
-from torchrl.data import SliceSamplerWithoutReplacement, SliceSampler, RandomSampler
+from torchrl.data import RandomSampler
 
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from accelerate.state import AcceleratorState
 from accelerate.utils import set_seed
-
-from timeit import default_timer
 from easydict import EasyDict
-
-import wandb
 from rich.progress import track
 from easydict import EasyDict
 
-from generative_operator.model.flow_model import (
-    FunctionalFlow,
-)
 from generative_operator.model.point_cloud_flow_model import PointCloudFunctionalFlow
 from generative_operator.utils.optimizer import CosineAnnealingWarmupLR
 from generative_operator.dataset.tensordict_dataset import TensorDictDataset
 
 from generative_operator.neural_networks.neural_operators.point_cloud_neural_operator import preprocess_data, compute_node_weights, compute_Fourier_modes
-from generative_operator.neural_networks.neural_operators.point_cloud_data_process import compute_triangle_area_, compute_tetrahedron_volume_, compute_measure_per_elem_, compute_node_measures, convert_structured_data
+from generative_operator.neural_networks.neural_operators.point_cloud_data_process import convert_structured_data
 
 from generative_operator.gaussian_process.matern import matern_halfinteger_kernel_batchwise
 from generative_operator.utils.normalizer import UnitGaussianNormalizer
 
 
-def data_preprocess(data_path):
-    coordx    = np.load(data_path+"NACA_Cylinder_X.npy")
-    coordy    = np.load(data_path+"NACA_Cylinder_Y.npy")
-    data_out  = np.load(data_path+"NACA_Cylinder_Q.npy")[:,4,:,:] #density, velocity 2d, pressure, mach number
+def data_preprocess(data_path, file_name = "pcno_quad_data.npz"):
+    coordx = np.load(os.path.join(data_path, "NACA_Cylinder_X.npy"))
+    coordy = np.load(os.path.join(data_path, "NACA_Cylinder_Y.npy"))
+    data_out = np.load(os.path.join(data_path, "NACA_Cylinder_Q.npy"))[:, 4, :, :]  # density, velocity 2d, pressure, mach number
 
     nodes_list, elems_list, features_list = convert_structured_data([coordx, coordy], data_out[...,np.newaxis], nnodes_per_elem = 4, feature_include_coords = False)
     
     nnodes, node_mask, nodes, node_measures_raw, features, directed_edges, edge_gradient_weights = preprocess_data(nodes_list, elems_list, features_list)
     node_measures, node_weights = compute_node_weights(nnodes,  node_measures_raw,  equal_measure = False)
     node_equal_measures, node_equal_weights = compute_node_weights(nnodes,  node_measures_raw,  equal_measure = True)
-    np.savez_compressed(data_path+"pcno_quad_data.npz", \
+    np.savez_compressed(os.path.join(data_path, file_name), \
                         nnodes=nnodes, node_mask=node_mask, nodes=nodes, \
                         node_measures_raw = node_measures_raw, \
                         node_measures=node_measures, node_weights=node_weights, \
@@ -64,10 +45,10 @@ def data_preprocess(data_path):
                         directed_edges=directed_edges, edge_gradient_weights=edge_gradient_weights) 
 
 
-def load_data(data_path):
+def load_data(data_path, file_name = "pcno_quad_data.npz"):
     equal_weights = True
 
-    data = np.load(data_path+"pcno_quad_data.npz")
+    data = np.load(os.path.join(data_path, file_name))
     nnodes, node_mask, nodes = data["nnodes"], data["node_mask"], data["nodes"]
     node_weights = data["node_equal_weights"] if equal_weights else data["node_weights"]
     node_measures = data["node_measures"]
@@ -80,8 +61,7 @@ def load_data(data_path):
     node_rhos[indices] = node_rhos[indices]/node_measures[indices]
     return nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights
 
-
-def data_preparition(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights):
+def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights, n_train=1000, n_test=200):
     print("Casting to tensor")
     nnodes = torch.from_numpy(nnodes)
     node_mask = torch.from_numpy(node_mask)
@@ -94,34 +74,6 @@ def data_preparition(nnodes, node_mask, nodes, node_weights, node_rhos, features
 
     # This is important
     nodes_input = nodes.clone()
-
-    n_train, n_test = 1000, 200
-
-
-    x_train, x_test = torch.cat((nodes_input[:n_train, ...], node_rhos[:n_train, ...]), -1), torch.cat((nodes_input[-n_test:, ...], node_rhos[-n_test:, ...]),-1)
-    aux_train       = (node_mask[0:n_train,...], nodes[0:n_train,...], node_weights[0:n_train,...], directed_edges[0:n_train,...], edge_gradient_weights[0:n_train,...])
-    aux_test        = (node_mask[-n_test:,...],  nodes[-n_test:,...],  node_weights[-n_test:,...],  directed_edges[-n_test:,...],  edge_gradient_weights[-n_test:,...])
-    y_train, y_test = features[:n_train,...],    features[-n_test:,...]
-
-
-    return x_train, x_test, aux_train, aux_test, y_train, y_test
-
-def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights):
-    print("Casting to tensor")
-    nnodes = torch.from_numpy(nnodes)
-    node_mask = torch.from_numpy(node_mask)
-    nodes = torch.from_numpy(nodes.astype(np.float32))
-    node_weights = torch.from_numpy(node_weights.astype(np.float32))
-    node_rhos = torch.from_numpy(node_rhos.astype(np.float32))
-    features = torch.from_numpy(features.astype(np.float32))
-    directed_edges = torch.from_numpy(directed_edges)
-    edge_gradient_weights = torch.from_numpy(edge_gradient_weights.astype(np.float32))
-
-    # This is important
-    nodes_input = nodes.clone()
-
-    n_train, n_test = 1000, 200
-
 
     train_data = TensorDict(
         {   "y": features[:n_train,...],
@@ -160,16 +112,12 @@ def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, nod
 
     if config.parameter.normalization_x:
         x_normalizer = UnitGaussianNormalizer(train_data["x"], non_normalized_dim = config.parameter.non_normalized_dim_x, normalization_dim=config.parameter.normalization_dim_x)
-        x_train = x_normalizer.encode(train_data["condition"]["x"])
-        x_test = x_normalizer.encode(test_data["condition"]["x"])
         x_normalizer.to(device)
     else:
         x_normalizer = None
         
     if config.parameter.normalization_y:
         y_normalizer = UnitGaussianNormalizer(train_data["y"], non_normalized_dim = config.parameter.non_normalized_dim_y, normalization_dim=config.parameter.normalization_dim_y)
-        y_train = y_normalizer.encode(train_data["y"])
-        y_test = y_normalizer.encode(test_data["y"])
         y_normalizer.to(device)
     else:
         y_normalizer = None
@@ -181,13 +129,7 @@ def data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, nod
 
     return train_dataset, test_dataset, x_normalizer, y_normalizer
 
-
-
-def model_initialization(device, x_train, y_train):
-
-    kx_max, ky_max = 32, 16
-    ndims = 2
-    Lx = Ly = 4.0
+def model_initialization(device, x_train, y_train, kx_max=32, ky_max=16, Lx=4.0, Ly=4.0, ndims=2):
 
     modes = compute_Fourier_modes(ndims, [kx_max,ky_max], [Lx, Ly])
     modes = torch.tensor(modes, dtype=torch.float).to(device)
@@ -242,6 +184,37 @@ def model_initialization(device, x_train, y_train):
 
 if __name__ == "__main__":
 
+    # argparse project_name
+    import argparse
+    parser = argparse.ArgumentParser(description="PCNO flow model training")
+    parser.add_argument(
+        "--project_name",
+        type=str,
+        default="PCNO_airfoil",
+        help="Project name",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed",
+    )
+    parser.add_argument(
+        "--data_path",
+        type=str,
+        default="data/",
+        help="Path to the data",
+    )
+    parser.add_argument(
+        "--data_preprocess",
+        action="store_false",
+        help="Whether to preprocess the data",
+    )
+    args = parser.parse_args()
+    project_name = args.project_name
+    seed = args.seed
+
+
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(log_with=None, kwargs_handlers=[ddp_kwargs])
     device = accelerator.device
@@ -249,25 +222,24 @@ if __name__ == "__main__":
 
     # Get the process rank
     process_rank = state.process_index
-    set_seed(seed=42+process_rank)
+    set_seed(seed=seed+process_rank)
     print(f"Process rank: {process_rank}")
-
-    project_name = "PCNO_airfoil"
 
     # check GPU brand, if NVIDIA RTX 4090 use batch size 4, if NVIDIA A100 use batch size 16
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
-        if "A100" in gpu_name:
+        if "A100" or "A800" in gpu_name:
             batch_size = 16
         elif "4090" in gpu_name:
             batch_size = 4
         else:
             batch_size = 4
+        print(f"GPU name: {gpu_name}, batch size: {batch_size}")
     else:
+        gpu_name = "CPU"
         batch_size = 4
-    print(f"GPU name: {gpu_name}, batch size: {batch_size}")
-
-
+        print(f"CPU, batch size: {batch_size}")
+    
     config = EasyDict(
         dict(
             device=device,
@@ -277,7 +249,7 @@ if __name__ == "__main__":
                 learning_rate=5e-5 * accelerator.num_processes,
                 iterations=1000 // batch_size * 2000,
                 log_rate=100,
-                eval_rate=1000 // batch_size * 500,
+                eval_rate=1000 // batch_size * 50,
                 checkpoint_rate=1000 // batch_size * 50,
                 video_save_path=f"output/{project_name}/videos",
                 model_save_path=f"output/{project_name}/models",
@@ -292,14 +264,16 @@ if __name__ == "__main__":
         )
     )
 
-    data_path = "/mnt/d/Dataset/"
-    # data_preprocess(data_path)
+    if args.data_preprocess:
+        data_preprocess(args.data_path, file_name = "pcno_quad_data.npz")
+    data_path = args.data_path
+
     nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights = load_data(data_path)
 
     train_dataset, test_dataset, x_normalizer, y_normalizer = data_preparition_with_tensordict(nnodes, node_mask, nodes, node_weights, node_rhos, features, directed_edges, edge_gradient_weights)
 
-
     flow_model, flow_model_config = model_initialization(device, train_dataset["condition"]["x"], train_dataset["y"])
+
 
     if config.parameter.model_load_path is not None and os.path.exists(
         config.parameter.model_load_path
@@ -307,7 +281,20 @@ if __name__ == "__main__":
         # pop out _metadata key
         state_dict = torch.load(config.parameter.model_load_path, map_location="cpu")
         state_dict.pop("_metadata", None)
-        flow_model.model.load_state_dict(state_dict)
+        # Create a new dictionary with updated keys
+        prefix = "_orig_mod."
+        new_state_dict = {}
+
+        for key, value in state_dict.items():
+            if key.startswith(prefix):
+                # Remove the prefix from the key
+                new_key = key[len(prefix) :]
+            else:
+                new_key = key
+            new_state_dict[new_key] = value
+
+        flow_model.model.load_state_dict(new_state_dict)
+        print("Model loaded from: ", config.parameter.model_load_path)
 
     optimizer = torch.optim.Adam(
         flow_model.model.parameters(), lr=config.parameter.learning_rate
@@ -408,21 +395,54 @@ if __name__ == "__main__":
                     to_log["loss/std"] = loss.std().item()
                     for i in range(loss.shape[0]):
                         to_log[f"loss/{i}"] = loss[i].item()
+
+                if iteration % config.parameter.eval_rate == 0:
+                    flow_model.eval()
+                    x1_sampled = flow_model.sample(
+                        x0=x0,
+                        t_span=torch.linspace(0.0, 1.0, 100),
+                        condition=data["condition"],
+                    )
+
+                    fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+                    fig.suptitle(f"Iteration: {iteration}")
+                    axs[0].set_title("x1_sampled")
+                    axs[0].set_xlim(-0.5, 1.5)
+                    axs[0].set_ylim(-0.5, 0.5)
+                    axs[0].set_aspect('equal')
+                    axs[0].set_xlabel("x")
+                    axs[0].set_ylabel("y")
+                    axs[0].set_xticks(np.arange(-0.5, 1.5, 0.25))
+                    axs[0].set_yticks(np.arange(-0.5, 0.5, 0.25))
+                    axs[0].pcolormesh(data["condition"]["nodes"][0,:,0].cpu().numpy().reshape(221,51), data["condition"]["nodes"][0,:,1].cpu().numpy().reshape(221,51), x1_sampled[0].cpu().numpy().reshape(221,51), shading='gouraud')
+                    axs[1].set_title("x1")
+                    axs[1].set_xlim(-0.5, 1.5)
+                    axs[1].set_ylim(-0.5, 0.5)
+                    axs[1].set_aspect('equal')
+                    axs[1].set_xlabel("x")
+                    axs[1].set_ylabel("y")
+                    axs[1].set_xticks(np.arange(-0.5, 1.5, 0.25))
+                    axs[1].set_yticks(np.arange(-0.5, 0.5, 0.25))
+                    axs[1].pcolormesh(data["condition"]["nodes"][0,:,0].cpu().numpy().reshape(221,51), data["condition"]["nodes"][0,:,1].cpu().numpy().reshape(221,51), x1[0].cpu().numpy().reshape(221,51), shading='gouraud')
+
+                    # color bar show value range for these two plots
+                    fig.colorbar(axs[0].collections[0], ax=axs[0], label="x1_sampled")
+                    fig.colorbar(axs[1].collections[0], ax=axs[1], label="x1")
+                    fig.tight_layout()
+
+                    # save fig as png
+                    plt.savefig(f"output/{project_name}/iteration_{iteration}.png")
+                    fig.clear()
+                    plt.close(fig)
+
+                    to_log["reconstruction_error"] = torch.mean(torch.abs(x1_sampled - x1)).item()
+
                 accelerator.log(
                     to_log,
                     step=iteration,
                 )
                 acc_train_loss = loss.mean().item()
                 print(f"iteration: {iteration}, train_loss: {acc_train_loss:.5f}, lr: {scheduler.get_last_lr()[0]:.7f}")
-
-        if iteration % config.parameter.eval_rate == 0:
-            pass
-            # sampled_process = flow_model.sample_process(
-            #     x0=x0,
-            #     t_span=torch.linspace(0.0, 1.0, 10),
-            #     condition=data["condition"],
-            #     with_grad=True,
-            # )
 
         if iteration % config.parameter.checkpoint_rate == 0:
             if accelerator.is_local_main_process:
