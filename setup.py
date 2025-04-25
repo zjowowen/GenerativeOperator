@@ -19,7 +19,7 @@ setup(
         'timm',
         'neuraloperator',
         'numpy<=1.26.4',
-        'torch>=2.2.0, <2.7.0',
+        'torch>=2.2.0',
         'opencv-python',
         'tensordict',
         'torchrl',
