@@ -587,7 +587,9 @@ if __name__ == "__main__":
                     fig.tight_layout()
 
                     # save fig as png
-                    plt.savefig(f"output/{project_name}/{title}_iteration_{iteration}.png")
+                    plt.savefig(
+                        f"output/{project_name}/{title}_iteration_{iteration}.png"
+                    )
                     fig.clear()
                     plt.close(fig)
 
@@ -608,12 +610,18 @@ if __name__ == "__main__":
                 )
                 plot_2d(data_test, x1_sampled_test, x1_test, "test_data")
 
-                to_log["reconstruction_error_train_dataset"] = torch.mean(
+                to_log["reconstruction_error_train_dataset/abs_error"] = torch.mean(
                     torch.abs(x1_sampled - x1)
                 ).item()
-                to_log["reconstruction_error_test_dataset"] = torch.mean(
+                to_log["reconstruction_error_test_dataset/abs_error"] = torch.mean(
                     torch.abs(x1_sampled_test - x1_test)
                 ).item()
+                to_log[
+                    "reconstruction_error_train_dataset/relative_Lp_error"
+                ] = flow_model.loss_function(x1_sampled, x1).item()
+                to_log[
+                    "reconstruction_error_test_dataset/relative_Lp_error"
+                ] = flow_model.loss_function(x1_sampled_test, x1).item()
 
             if len(list(to_log.keys())) > 0:
                 accelerator.log(

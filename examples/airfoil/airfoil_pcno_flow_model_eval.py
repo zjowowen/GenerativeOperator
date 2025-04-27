@@ -571,6 +571,14 @@ if __name__ == "__main__":
                 to_log["reconstruction_error_test_dataset"] = torch.mean(
                     torch.abs(x1_sampled_test - x1_test)
                 ).item()
+                to_log[
+                    "reconstruction_error_train_dataset/relative_Lp_error"
+                ] = flow_model.loss_function(x1_sampled, x1).item()
+                to_log[
+                    "reconstruction_error_test_dataset/relative_Lp_error"
+                ] = flow_model.loss_function(x1_sampled_test, x1).item()
+
+
 
             if len(list(to_log.keys())) > 0:
                 accelerator.log(
