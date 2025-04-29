@@ -371,17 +371,17 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         if "A100" in gpu_name or "A800" in gpu_name:
-            batch_size = 16
+            batch_size = 16 // len(value_type)
         elif "4090" in gpu_name:
-            batch_size = 4
+            batch_size = 4 // len(value_type)
         elif "H200" in gpu_name:
-            batch_size = 32
+            batch_size = 32 // len(value_type)
         else:
-            batch_size = 4
+            batch_size = 4 // len(value_type)
         print(f"GPU name: {gpu_name}, batch size: {batch_size}")
     else:
         gpu_name = "CPU"
-        batch_size = 4
+        batch_size = 4 // len(value_type)
         print(f"CPU, batch size: {batch_size}")
 
     if args.data_preprocess:
