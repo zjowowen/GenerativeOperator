@@ -1,4 +1,5 @@
 import os
+from typing import List
 import matplotlib
 
 matplotlib.use("Agg")
@@ -35,12 +36,48 @@ from generative_operator.gaussian_process.matern import (
 from generative_operator.utils.normalizer import UnitGaussianNormalizer
 
 
-def data_preprocess(data_path, file_name="pcno_quad_data.npz"):
+def data_preprocess(
+    data_path, file_name="pcno_quad_data.npz", value_type: List[str] = ["mach"]
+):
+    """
+    Overview:
+        Preprocess the data for the PCNO model.
+    Arguments:
+        - data_path (str): path to the data
+        - file_name (str): name of the output file
+        - value_type (List[str]): type of the data to be used
+        .. note::
+            The value_type can be one of the following:
+            - "density"
+            - "velocityx"
+            - "velocityy"
+            - "pressure"
+            - "mach"
+            The default value is ["mach"].
+    """
+
+    value_type_idx = []
+    for value in value_type:
+        if value == "density":
+            value_type_idx.append(0)
+        elif value == "velocityx":
+            value_type_idx.append(1)
+        elif value == "velocityy":
+            value_type_idx.append(2)
+        elif value == "pressure":
+            value_type_idx.append(3)
+        elif value == "mach":
+            value_type_idx.append(4)
+        else:
+            raise ValueError(
+                f"Invalid value type: {value}. Must be one of ['density', 'velocity', 'pressure', 'mach']"
+            )
+
     coordx = np.load(os.path.join(data_path, "NACA_Cylinder_X.npy"))
     coordy = np.load(os.path.join(data_path, "NACA_Cylinder_Y.npy"))
     data_out = np.load(os.path.join(data_path, "NACA_Cylinder_Q.npy"))[
-        :, 4, :, :
-    ]  # density, velocity 2d, pressure, mach number
+        :, value_type_idx, :, :
+    ]
 
     nodes_list, elems_list, features_list = convert_structured_data(
         [coordx, coordy],
@@ -296,13 +333,27 @@ if __name__ == "__main__":
         help="Whether to preprocess the data",
     )
     parser.add_argument(
+        "--value_type",
+        type=lambda s: s.split(","),
+        default=["mach"],
+        help="Type of the data to be used, separated by comma. Options: density, velocityx, velocityy, pressure, mach",
+    )
+    parser.add_argument(
+        "--file_name",
+        type=str,
+        default="pcno_quad_data.npz",
+        help="Name of the output file",
+    )
+    parser.add_argument(
         "--wandb",
-        action="store_false",
+        action="store_true",
         help="Whether to use wandb",
     )
     args = parser.parse_args()
     project_name = args.project_name
     seed = args.seed
+    value_type = args.value_type
+    file_name = args.file_name
 
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
@@ -323,6 +374,8 @@ if __name__ == "__main__":
             batch_size = 16
         elif "4090" in gpu_name:
             batch_size = 4
+        elif "H200" in gpu_name:
+            batch_size = 32
         else:
             batch_size = 4
         print(f"GPU name: {gpu_name}, batch size: {batch_size}")
@@ -332,7 +385,9 @@ if __name__ == "__main__":
         print(f"CPU, batch size: {batch_size}")
 
     if args.data_preprocess:
-        data_preprocess(args.data_path, file_name="pcno_quad_data.npz")
+        if accelerator.is_local_main_process:
+            data_preprocess(args.data_path, file_name=file_name, value_type=value_type)
+        accelerator.wait_for_everyone()
     data_path = args.data_path
 
     (
@@ -344,7 +399,7 @@ if __name__ == "__main__":
         features,
         directed_edges,
         edge_gradient_weights,
-    ) = load_data(data_path)
+    ) = load_data(data_path, file_name=file_name)
 
     (
         train_dataset,

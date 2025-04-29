@@ -1,4 +1,5 @@
 import os
+from typing import List
 import matplotlib
 
 matplotlib.use("Agg")
@@ -35,12 +36,48 @@ from generative_operator.gaussian_process.matern import (
 from generative_operator.utils.normalizer import UnitGaussianNormalizer
 
 
-def data_preprocess(data_path, file_name="pcno_quad_data.npz"):
+def data_preprocess(
+    data_path, file_name="pcno_quad_data.npz", value_type: List[str] = ["mach"]
+):
+    """
+    Overview:
+        Preprocess the data for the PCNO model.
+    Arguments:
+        - data_path (str): path to the data
+        - file_name (str): name of the output file
+        - value_type (List[str]): type of the data to be used
+        .. note::
+            The value_type can be one of the following:
+            - "density"
+            - "velocityx"
+            - "velocityy"
+            - "pressure"
+            - "mach"
+            The default value is ["mach"].
+    """
+
+    value_type_idx = []
+    for value in value_type:
+        if value == "density":
+            value_type_idx.append(0)
+        elif value == "velocityx":
+            value_type_idx.append(1)
+        elif value == "velocityy":
+            value_type_idx.append(2)
+        elif value == "pressure":
+            value_type_idx.append(3)
+        elif value == "mach":
+            value_type_idx.append(4)
+        else:
+            raise ValueError(
+                f"Invalid value type: {value}. Must be one of ['density', 'velocity', 'pressure', 'mach']"
+            )
+
     coordx = np.load(os.path.join(data_path, "NACA_Cylinder_X.npy"))
     coordy = np.load(os.path.join(data_path, "NACA_Cylinder_Y.npy"))
     data_out = np.load(os.path.join(data_path, "NACA_Cylinder_Q.npy"))[
-        :, 4, :, :
-    ]  # density, velocity 2d, pressure, mach number
+        :, value_type_idx, :, :
+    ]
 
     nodes_list, elems_list, features_list = convert_structured_data(
         [coordx, coordy],
@@ -296,13 +333,27 @@ if __name__ == "__main__":
         help="Whether to preprocess the data",
     )
     parser.add_argument(
+        "--value_type",
+        type=lambda s: s.split(","),
+        default=["mach"],
+        help="Type of the data to be used, separated by comma. Options: density, velocityx, velocityy, pressure, mach",
+    )
+    parser.add_argument(
+        "--file_name",
+        type=str,
+        default="pcno_quad_data.npz",
+        help="Name of the output file",
+    )
+    parser.add_argument(
         "--wandb",
-        action="store_false",
+        action="store_true",
         help="Whether to use wandb",
     )
     args = parser.parse_args()
     project_name = args.project_name
     seed = args.seed
+    value_type = args.value_type
+    file_name = args.file_name
 
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
@@ -323,6 +374,8 @@ if __name__ == "__main__":
             batch_size = 16
         elif "4090" in gpu_name:
             batch_size = 4
+        elif "H200" in gpu_name:
+            batch_size = 32
         else:
             batch_size = 4
         print(f"GPU name: {gpu_name}, batch size: {batch_size}")
@@ -435,11 +488,12 @@ if __name__ == "__main__":
     accelerator.print("✨ Start Evaluation ...")
 
     for iteration in track(
-        range(max(len(train_dataset), len(test_dataset))  // config.parameter.batch_size),
+        range(
+            max(len(train_dataset), len(test_dataset)) // config.parameter.batch_size
+        ),
         description="Evaluation",
         disable=not accelerator.is_local_main_process,
     ):
-        
         flow_model.eval()
         if accelerator.is_local_main_process:
             data = train_replay_buffer.sample()
@@ -458,9 +512,7 @@ if __name__ == "__main__":
                 L = torch.linalg.cholesky(
                     C
                     + 1e-6
-                    * torch.eye(
-                        C.size(1), device=C.device, dtype=C.dtype
-                    ).unsqueeze(0)
+                    * torch.eye(C.size(1), device=C.device, dtype=C.dtype).unsqueeze(0)
                 )
 
                 # Generate standard normal noise; shape [B, N, D]
@@ -506,14 +558,8 @@ if __name__ == "__main__":
                 axs[0].set_xticks(np.arange(-0.5, 1.5, 0.25))
                 axs[0].set_yticks(np.arange(-0.5, 0.5, 0.25))
                 axs[0].pcolormesh(
-                    data["condition"]["nodes"][0, :, 0]
-                    .cpu()
-                    .numpy()
-                    .reshape(221, 51),
-                    data["condition"]["nodes"][0, :, 1]
-                    .cpu()
-                    .numpy()
-                    .reshape(221, 51),
+                    data["condition"]["nodes"][0, :, 0].cpu().numpy().reshape(221, 51),
+                    data["condition"]["nodes"][0, :, 1].cpu().numpy().reshape(221, 51),
                     x1_sampled[0].cpu().numpy().reshape(221, 51),
                     shading="gouraud",
                 )
@@ -526,14 +572,8 @@ if __name__ == "__main__":
                 axs[1].set_xticks(np.arange(-0.5, 1.5, 0.25))
                 axs[1].set_yticks(np.arange(-0.5, 0.5, 0.25))
                 axs[1].pcolormesh(
-                    data["condition"]["nodes"][0, :, 0]
-                    .cpu()
-                    .numpy()
-                    .reshape(221, 51),
-                    data["condition"]["nodes"][0, :, 1]
-                    .cpu()
-                    .numpy()
-                    .reshape(221, 51),
+                    data["condition"]["nodes"][0, :, 0].cpu().numpy().reshape(221, 51),
+                    data["condition"]["nodes"][0, :, 1].cpu().numpy().reshape(221, 51),
                     x1[0].cpu().numpy().reshape(221, 51),
                     shading="gouraud",
                 )
@@ -577,8 +617,6 @@ if __name__ == "__main__":
                 to_log[
                     "reconstruction_error_test_dataset/relative_Lp_error"
                 ] = flow_model.loss_function(x1_sampled_test, x1).item()
-
-
 
             if len(list(to_log.keys())) > 0:
                 accelerator.log(
