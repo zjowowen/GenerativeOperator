@@ -74,7 +74,7 @@ def data_preprocess(
 
     nodes_list, elems_list, features_list = convert_structured_data(
         [coordx, coordy],
-        data_out[..., np.newaxis],
+        np.transpose(data_out, (0, 2, 3, 1)),
         nnodes_per_elem=4,
         feature_include_coords=False,
     )
@@ -341,6 +341,13 @@ if __name__ == "__main__":
     project_name = args.project_name
     seed = args.seed
     value_type = args.value_type
+    for value in value_type:
+        assert value in ["density", "velocityx", "velocityy", "pressure", "mach"]
+    # sort value_type by the order of the list
+    value_type.sort(
+        key=lambda x: ["density", "velocityx", "velocityy", "pressure", "mach"].index(x)
+    )
+    value_num = len(value_type)
     file_name = args.file_name
 
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
@@ -359,18 +366,19 @@ if __name__ == "__main__":
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         if "A100" in gpu_name or "A800" in gpu_name:
-            batch_size = 16 // len(value_type)
+            batch_size = 16
         elif "4090" in gpu_name:
-            batch_size = 4 // len(value_type)
+            batch_size = 4
         elif "H200" in gpu_name:
-            batch_size = 32 // len(value_type)
+            batch_size = 32
         else:
-            batch_size = 4 // len(value_type)
+            batch_size = 4
         print(f"GPU name: {gpu_name}, batch size: {batch_size}")
     else:
         gpu_name = "CPU"
-        batch_size = 4 // len(value_type)
+        batch_size = 4
         print(f"CPU, batch size: {batch_size}")
+
 
     if args.data_preprocess:
         data_preprocess(args.data_path, file_name=file_name, value_type=value_type)
