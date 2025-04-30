@@ -81,7 +81,7 @@ def data_preprocess(
 
     nodes_list, elems_list, features_list = convert_structured_data(
         [coordx, coordy],
-        data_out[..., np.newaxis],
+        np.transpose(data_out, (0, 2, 3, 1)),
         nnodes_per_elem=4,
         feature_include_coords=False,
     )
@@ -353,6 +353,13 @@ if __name__ == "__main__":
     project_name = args.project_name
     seed = args.seed
     value_type = args.value_type
+    for value in value_type:
+        assert value in ["density", "velocityx", "velocityy", "pressure", "mach"]
+    # sort value_type by the order of the list
+    value_type.sort(
+        key=lambda x: ["density", "velocityx", "velocityy", "pressure", "mach"].index(x)
+    )
+    value_num = len(value_type)
     file_name = args.file_name
 
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
@@ -592,61 +599,108 @@ if __name__ == "__main__":
                     condition=data["condition"],
                 )
 
+                def plot_2d_backup(data, x1_sampled, x1, title):
+                    for value_index in range(value_num):
+                        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+                        fig.suptitle(f"Iteration: {iteration}, {title}")
+                        axs[0].set_title("x1_sampled")
+                        axs[0].set_xlim(-0.5, 1.5)
+                        axs[0].set_ylim(-0.5, 0.5)
+                        axs[0].set_aspect("equal")
+                        axs[0].set_xlabel("x")
+                        axs[0].set_ylabel("y")
+                        axs[0].set_xticks(np.arange(-0.5, 1.5, 0.25))
+                        axs[0].set_yticks(np.arange(-0.5, 0.5, 0.25))
+                        axs[0].pcolormesh(
+                            data["condition"]["nodes"][0, :, 0]
+                            .cpu()
+                            .numpy()
+                            .reshape(221, 51),
+                            data["condition"]["nodes"][0, :, 1]
+                            .cpu()
+                            .numpy()
+                            .reshape(221, 51),
+                            x1_sampled[0,:,value_index].cpu().numpy().reshape(221, 51),
+                            shading="gouraud",
+                        )
+                        axs[1].set_title("x1")
+                        axs[1].set_xlim(-0.5, 1.5)
+                        axs[1].set_ylim(-0.5, 0.5)
+                        axs[1].set_aspect("equal")
+                        axs[1].set_xlabel("x")
+                        axs[1].set_ylabel("y")
+                        axs[1].set_xticks(np.arange(-0.5, 1.5, 0.25))
+                        axs[1].set_yticks(np.arange(-0.5, 0.5, 0.25))
+                        axs[1].pcolormesh(
+                            data["condition"]["nodes"][0, :, 0]
+                            .cpu()
+                            .numpy()
+                            .reshape(221, 51),
+                            data["condition"]["nodes"][0, :, 1]
+                            .cpu()
+                            .numpy()
+                            .reshape(221, 51),
+                            x1[0,:,value_index].cpu().numpy().reshape(221, 51),
+                            shading="gouraud",
+                        )
+
+                        # color bar show value range for these two plots
+                        fig.colorbar(axs[0].collections[0], ax=axs[0], label="x1_sampled")
+                        fig.colorbar(axs[1].collections[0], ax=axs[1], label="x1")
+                        fig.tight_layout()
+
+                        # save fig as png
+                        plt.savefig(
+                            f"output/{project_name}/{title}_{value_type[value_index]}_iteration_{iteration}.png"
+                        )
+                        fig.clear()
+                        plt.close(fig)
+
                 def plot_2d(data, x1_sampled, x1, title):
-                    fig, axs = plt.subplots(1, 2, figsize=(12, 6))
-                    fig.suptitle(f"Iteration: {iteration}, {title}")
-                    axs[0].set_title("x1_sampled")
-                    axs[0].set_xlim(-0.5, 1.5)
-                    axs[0].set_ylim(-0.5, 0.5)
-                    axs[0].set_aspect("equal")
-                    axs[0].set_xlabel("x")
-                    axs[0].set_ylabel("y")
-                    axs[0].set_xticks(np.arange(-0.5, 1.5, 0.25))
-                    axs[0].set_yticks(np.arange(-0.5, 0.5, 0.25))
-                    axs[0].pcolormesh(
-                        data["condition"]["nodes"][0, :, 0]
-                        .cpu()
-                        .numpy()
-                        .reshape(221, 51),
-                        data["condition"]["nodes"][0, :, 1]
-                        .cpu()
-                        .numpy()
-                        .reshape(221, 51),
-                        x1_sampled[0].cpu().numpy().reshape(221, 51),
-                        shading="gouraud",
-                    )
-                    axs[1].set_title("x1")
-                    axs[1].set_xlim(-0.5, 1.5)
-                    axs[1].set_ylim(-0.5, 0.5)
-                    axs[1].set_aspect("equal")
-                    axs[1].set_xlabel("x")
-                    axs[1].set_ylabel("y")
-                    axs[1].set_xticks(np.arange(-0.5, 1.5, 0.25))
-                    axs[1].set_yticks(np.arange(-0.5, 0.5, 0.25))
-                    axs[1].pcolormesh(
-                        data["condition"]["nodes"][0, :, 0]
-                        .cpu()
-                        .numpy()
-                        .reshape(221, 51),
-                        data["condition"]["nodes"][0, :, 1]
-                        .cpu()
-                        .numpy()
-                        .reshape(221, 51),
-                        x1[0].cpu().numpy().reshape(221, 51),
-                        shading="gouraud",
-                    )
+                    for value_index in range(value_num):
+                        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+                        fig.suptitle(f"Iteration: {iteration}, {title}")
+                        for ax in axs:
+                            ax.set_xlim(-0.5, 1.5)
+                            ax.set_ylim(-0.5, 0.5)
+                            ax.set_aspect("equal")
+                            ax.set_xlabel("x")
+                            ax.set_ylabel("y")
+                            ax.set_xticks(np.arange(-0.5, 1.5, 0.25))
+                            ax.set_yticks(np.arange(-0.5, 0.5, 0.25))
 
-                    # color bar show value range for these two plots
-                    fig.colorbar(axs[0].collections[0], ax=axs[0], label="x1_sampled")
-                    fig.colorbar(axs[1].collections[0], ax=axs[1], label="x1")
-                    fig.tight_layout()
+                        axs[0].set_title("x1_sampled")
+                        mesh0 = axs[0].pcolormesh(
+                            data["condition"]["nodes"][0, :, 0].cpu().numpy().reshape(221, 51),
+                            data["condition"]["nodes"][0, :, 1].cpu().numpy().reshape(221, 51),
+                            x1_sampled[0,:,value_index].cpu().numpy().reshape(221, 51),
+                            shading="gouraud",
+                        )
 
-                    # save fig as png
-                    plt.savefig(
-                        f"output/{project_name}/{title}_iteration_{iteration}.png"
-                    )
-                    fig.clear()
-                    plt.close(fig)
+                        axs[1].set_title("x1")
+                        mesh1 = axs[1].pcolormesh(
+                            data["condition"]["nodes"][0, :, 0].cpu().numpy().reshape(221, 51),
+                            data["condition"]["nodes"][0, :, 1].cpu().numpy().reshape(221, 51),
+                            x1[0,:,value_index].cpu().numpy().reshape(221, 51),
+                            shading="gouraud",
+                        )
+
+                        # Adjust subplots to leave space for colorbar
+                        plt.subplots_adjust(right=0.85)  # adjust as needed
+
+                        # Place colorbar in empty space
+                        cbar_ax = fig.add_axes([0.88, 0.15, 0.025, 0.7])  # [left, bottom, width, height]
+                        cbar = fig.colorbar(mesh0, cax=cbar_ax)
+                        cbar.set_label("Value")
+
+                        fig.tight_layout(rect=[0, 0, 0.85, 0.95])  # leave space for suptitle and colorbar
+
+                        # save fig as png
+                        plt.savefig(
+                            f"output/{project_name}/{title}_{value_type[value_index]}_iteration_{iteration}.png"
+                        )
+                        fig.clear()
+                        plt.close(fig)
 
                 plot_2d(data, x1_sampled, x1, "train_data")
 
